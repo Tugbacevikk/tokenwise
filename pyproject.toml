@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tokenwise"
+version = "0.1.0.dev0"
+description = "A frugal AI coding assistant: sends less context, writes less code."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [{ name = "Tuğba Çevik" }]
+keywords = ["llm", "claude", "anthropic", "cli", "token", "cost", "code-generation"]
+dependencies = [
+    "anthropic>=0.40",
+    "typer>=0.12",
+    "rich>=13",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6"]
+
+[project.scripts]
+tokenwise = "tokenwise.cli:app"
+
+[project.urls]
+Repository = "https://github.com/Tugbacevikk/tokenwise"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
