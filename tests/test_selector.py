@@ -14,7 +14,7 @@ def test_parse_paths_drops_unsafe_and_bad_json():
 
 def test_select_files_uses_cheap_model_and_map(settings, fake):
     llm = fake('["app/auth.py"]')
-    chosen, reply = select_files("add a length check", "MAP TEXT", settings, llm)
+    chosen, reply, _ = select_files("add a length check", "MAP TEXT", settings, llm)
     assert chosen == ["app/auth.py"]
     assert reply.role == "selector"
     assert llm.calls[0]["model"] == settings.selector_model
@@ -23,5 +23,5 @@ def test_select_files_uses_cheap_model_and_map(settings, fake):
 
 def test_select_files_respects_max_files(settings, fake):
     settings.max_files = 1
-    chosen, _ = select_files("x", "", settings, fake('["a.py", "b.py"]'))
+    chosen, _, _ = select_files("x", "", settings, fake('["a.py", "b.py"]'))
     assert chosen == ["a.py"]

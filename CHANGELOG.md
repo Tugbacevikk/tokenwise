@@ -7,6 +7,8 @@ a change that breaks existing use bumps major.
 
 First release.
 
+- Large files are sent focused: header, the functions the selector named
+  (`path::name`), and a list of the rest; `NEED_FILES` gets the whole file.
 - `check` setting / `--check`: a change must pass a command (usually the tests) in a
   throwaway copy before it is offered; failures go back to the model, then up the ladder.
 - Line endings (CRLF/LF) and BOM are kept when a file is edited; non-UTF-8 files get a

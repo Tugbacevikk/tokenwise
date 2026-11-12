@@ -7,7 +7,7 @@ Modele bütün projeyi göndermek ve bütün dosyayı yeniden yazdırmak yerine 
 
 1. Projenin **haritasını** çıkarır: dosya yolları ve fonksiyon/sınıf imzaları, gövdeler olmadan.
 2. **En ucuz model** haritaya bakıp işin hangi dosyalara ihtiyaç duyduğunu seçer.
-3. **Sadece o dosyalar** düzenleyici modele gönderilir.
+3. **Sadece o dosyalar** düzenleyici modele gönderilir; büyük dosyalardan da sadece ilgili fonksiyonlar.
 4. **Yönlendirici** isteğin zorluğunu kurallarla tahmin eder (model çağrısı yok) ve model merdiveninin uygun basamağından başlar; model beceremezse bir üst modele geçer.
 5. Model dosyayı baştan yazmaz, sadece **değişen satırları** döndürür.
 6. Değişiklik renkli fark (diff) olarak gösterilir, onay verirsen uygulanır, istersen geri alınır.
@@ -86,6 +86,18 @@ max_files = 8
 ```
 
 `models` bir merdivendir: dosya seçici hep ilkini kullanır; düzenleyici, yönlendiricinin seçtiği basamaktan başlar (kolay → 1., orta → 2., zor → 3.) ve her basamakta 2 deneme yapıp bir üste çıkar. Tek model yazarsan merdiven yoktur, sadece tekrar dener. `TOKENWISE_PROVIDER`, `TOKENWISE_BASE_URL` ve `TOKENWISE_MODELS` (virgülle ayrılmış) ortam değişkenleri ayar dosyasını ezer. API anahtarı sadece `.env` içinde durur ve `init` onu `.gitignore`'a ekler.
+
+### Büyük dosyalar
+
+`focus_lines` (varsayılan 300) satırdan uzun dosyalar haritada `[large]` diye işaretlenir. Seçici bu dosyalar için `dosya::fonksiyon` ya da `dosya::Sınıf.metot` biçiminde hedef verebilir; düzenleyiciye o zaman dosyanın tamamı yerine **dosyanın başı (import'lar), istenen fonksiyonlar ve dosyadaki diğer tanımların listesi** gider. Atlanan yerler `⋯ N lines omitted` satırıyla gösterilir. Gösterilen kısımlar birebir kopyalandığı için modelin değişikliği asıl dosyaya yine tam uyar. Model daha fazlasını görmek isterse `NEED_FILES` ile dosyanın tamamını ister ve tamamı gönderilir; sembol bulunamazsa ya da kazanç azsa da dosya bütün gider.
+
+Bu reponun kendi dosyalarında tek fonksiyon için ölçüm:
+
+| Dosya | Tüm dosya | Odaklı |
+| --- | ---: | ---: |
+| `tokenwise/cli.py` (450 satır), `undo` | ≈4.300 token | ≈1.100 token |
+| `tokenwise/editor.py` (377 satır), `plan_changes` | ≈3.450 token | ≈1.000 token |
+| `vscode-extension/src/extension.ts` (290 satır), `ReportProvider` | ≈2.500 token | ≈600 token |
 
 ### Otomatik test kontrolü
 
@@ -190,6 +202,7 @@ tokenwise/
 ├── pipeline.py   # bir isteğin baştan sona akışı (CLI, JSON ve benchmark ortak kullanır)
 ├── ledger.py     # maliyet kaydı (.tokenwise/ledger.db) ve özetler
 ├── pricing.py    # model fiyatları ve token → dolar hesabı
+├── focus.py      # büyük dosyalardan sadece ilgili fonksiyonları gösterme
 ├── checker.py    # kontrol komutunu geçici kopyada çalıştırma
 ├── textio.py     # satır sonu (CRLF/LF) ve BOM koruyan okuma/yazma
 ├── benchmark.py  # baseline ile tokenwise karşılaştırması, geçici kopyada kontrol

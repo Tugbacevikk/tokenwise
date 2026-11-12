@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .config import Settings
+from .focus import focused_view
 from .llm import LLM, Reply
 from .prompts import EDITOR_SYSTEM
 from .selector import is_safe_path, normalize_path
@@ -232,15 +233,28 @@ def plan_changes(root: Path, edits: list[Edit]) -> list[Change]:
 
 
 def build_prompt(
-    request: str, paths: list[str], root: Path, all_files: list[str], feedback: str = ""
+    request: str,
+    paths: list[str],
+    root: Path,
+    all_files: list[str],
+    feedback: str = "",
+    focus: dict[str, list[str]] | None = None,
+    focus_lines: int = 300,
 ) -> str:
     parts = [f"Request: {request}", "", "Files:"]
     for rel in paths:
         path = root / rel
-        if path.is_file():
-            parts.append(f"{rel}\n```\n{read_source(path, strict=False)}\n```")
-        else:
+        if not path.is_file():
             parts.append(f"{rel}\n(does not exist yet)")
+            continue
+        source = read_source(path, strict=False)
+        view = None
+        if focus and rel in focus and source.count("\n") + 1 > focus_lines:
+            view = focused_view(rel, source, focus[rel])
+        if view is None:
+            parts.append(f"{rel}\n```\n{source}\n```")
+        else:
+            parts.append(f"{rel} (shown in part)\n```\n{view}\n```")
     others = [f for f in all_files if f not in paths][:MAX_LISTED_FILES]
     if others:
         parts += ["", "Other project files (ask with NEED_FILES if needed):", ", ".join(others)]
@@ -257,6 +271,7 @@ def propose(
     all_files: list[str],
     models: list[str] | None = None,
     verify: Callable[[list[Change]], object] | None = None,
+    focus: dict[str, list[str]] | None = None,
 ) -> Proposal:
     """Asks each model in `models` (cheapest first) for edits, climbing to the next on failure.
 
@@ -266,13 +281,16 @@ def propose(
     """
     models = models or list(settings.models)
     paths = list(dict.fromkeys(paths))
+    focus = dict(focus or {})
     replies: list[Reply] = []
     feedback = ""
     last: Proposal | None = None
     for model in models:
         attempts = 0
         while attempts < ATTEMPTS_PER_MODEL:
-            prompt = build_prompt(request, paths, settings.root, all_files, feedback)
+            prompt = build_prompt(
+                request, paths, settings.root, all_files, feedback, focus, settings.focus_lines
+            )
             reply = llm.complete(
                 model=model,
                 system=EDITOR_SYSTEM,
@@ -282,9 +300,13 @@ def propose(
             reply.role = "editor"
             replies.append(reply)
 
-            needed = [p for p in parse_need_files(reply.text) if p in all_files and p not in paths]
-            if needed:
+            asked = parse_need_files(reply.text)
+            needed = [p for p in asked if p in all_files and p not in paths]
+            unfocus = [p for p in asked if p in focus]
+            if needed or unfocus:
                 paths += needed
+                for p in unfocus:
+                    del focus[p]  # it wants the whole file
                 feedback = ""
                 continue
             attempts += 1

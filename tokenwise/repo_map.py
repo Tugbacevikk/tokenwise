@@ -116,7 +116,9 @@ def build_map(settings: Settings, files: list[str]) -> str:
     for rel in files:
         source = (settings.root / rel).read_text("utf-8", errors="replace")
         symbols = outline(rel, source)
-        blocks.append("\n".join([rel, *("  " + s for s in symbols)]))
+        lines = source.count("\n") + 1
+        title = f"{rel} [large: {lines} lines]" if lines > settings.focus_lines else rel
+        blocks.append("\n".join([title, *("  " + s for s in symbols)]))
     return "\n".join(blocks)
 
 

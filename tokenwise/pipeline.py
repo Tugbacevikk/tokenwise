@@ -107,7 +107,7 @@ def run(request: str, settings: Settings, llm: LLM, model: str = "") -> Result:
     all_files = list_source_files(settings)
     repo_map = build_map(settings, all_files)
 
-    chosen, selector_reply = select_files(request, repo_map, settings, llm)
+    chosen, selector_reply, focus = select_files(request, repo_map, settings, llm)
     result.replies.append(selector_reply)
     result.files = chosen
     if not chosen:
@@ -121,7 +121,7 @@ def run(request: str, settings: Settings, llm: LLM, model: str = "") -> Result:
         result.level, result.models = NAMES[level], ladder(settings.models, level)
 
     verify = make_verifier(settings, settings.check) if settings.check else None
-    proposal = propose(request, chosen, settings, llm, all_files, result.models, verify)
+    proposal = propose(request, chosen, settings, llm, all_files, result.models, verify, focus)
     result.replies += proposal.replies
     result.check_passed, result.check_output = proposal.check_passed, proposal.check_output
     result.files = proposal.files_sent

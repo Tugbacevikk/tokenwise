@@ -38,6 +38,8 @@ models = {models}
 extensions = [".py", ".js", ".jsx", ".ts", ".tsx"]
 # Most files sent to the editor in one request
 max_files = 8
+# Files longer than this may be sent focused: only the functions the request needs
+focus_lines = 300
 # Command that must pass before a change is offered, run in a throwaway copy of the project.
 # A failing check is sent back to the model to fix. {{python}} = the Python running tokenwise.
 # check = "{{python}} -m pytest -q -x"
@@ -72,6 +74,7 @@ class Settings:
     ignore_dirs: tuple[str, ...] = DEFAULT_IGNORE_DIRS
     max_file_bytes: int = 200_000
     max_files: int = 8
+    focus_lines: int = 300
     max_output_tokens: int = 4096
     cache: bool = True
     check: str = ""
