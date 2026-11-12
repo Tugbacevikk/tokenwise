@@ -38,6 +38,9 @@ models = {models}
 extensions = [".py", ".js", ".jsx", ".ts", ".tsx"]
 # Most files sent to the editor in one request
 max_files = 8
+# Command that must pass before a change is offered, run in a throwaway copy of the project.
+# A failing check is sent back to the model to fix. {{python}} = the Python running tokenwise.
+# check = "{{python}} -m pytest -q -x"
 
 # Prices in USD per million tokens: [input, cache_write, cache_read, output].
 # Claude models are built in; add any other model here (local models cost 0).
@@ -71,6 +74,8 @@ class Settings:
     max_files: int = 8
     max_output_tokens: int = 4096
     cache: bool = True
+    check: str = ""
+    check_timeout: int = 300
     prices: dict = field(default_factory=dict)
 
     @property

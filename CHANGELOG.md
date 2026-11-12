@@ -7,6 +7,13 @@ a change that breaks existing use bumps major.
 
 First release.
 
+- `check` setting / `--check`: a change must pass a command (usually the tests) in a
+  throwaway copy before it is offered; failures go back to the model, then up the ladder.
+- Line endings (CRLF/LF) and BOM are kept when a file is edited; non-UTF-8 files get a
+  clear error.
+- Edit blocks from small local models are accepted even with decorated or missing paths,
+  loose markers or wrong indentation; SEARCH only matches at line starts.
+
 - `tokenwise map`: project map with function and class signatures only, and how much
   smaller it is than the full source.
 - `tokenwise ask`: the cheapest model picks the needed files from the map, a rule-based

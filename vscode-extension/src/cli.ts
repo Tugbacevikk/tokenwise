@@ -22,6 +22,7 @@ export interface AskResult {
   model: string;
   changes: Change[];
   lines: { added: number; removed: number };
+  check?: { command: string; passed: boolean | null; output: string };
   usage: { input: number; output: number; cache_read: number; cache_write: number };
   cost_usd: number;
 }

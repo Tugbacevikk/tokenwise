@@ -47,6 +47,8 @@ tokenwise ask "..." --dry-run  # sadece farkı göster, dosyaya yazma
 tokenwise ask "..." -y         # onay sormadan uygula
 tokenwise ask "..." -m claude-opus-5-5   # tek bir modeli zorla, merdiven yok
 tokenwise ask "..." --no-cache # önbelleğe bakma
+tokenwise ask "..." --check "pytest -q"   # önce testler geçsin (ayardaki check'i ezer)
+tokenwise ask "..." --no-check # ayarlı check'i bu sefer atla
 tokenwise undo                 # son uygulanan değişikliği geri al
 tokenwise cache                # önbellekte kaç cevap var; --clear ile temizle
 tokenwise report               # son 7 gün ve tüm zaman: istek, token, maliyet, model dağılımı
@@ -84,6 +86,17 @@ max_files = 8
 ```
 
 `models` bir merdivendir: dosya seçici hep ilkini kullanır; düzenleyici, yönlendiricinin seçtiği basamaktan başlar (kolay → 1., orta → 2., zor → 3.) ve her basamakta 2 deneme yapıp bir üste çıkar. Tek model yazarsan merdiven yoktur, sadece tekrar dener. `TOKENWISE_PROVIDER`, `TOKENWISE_BASE_URL` ve `TOKENWISE_MODELS` (virgülle ayrılmış) ortam değişkenleri ayar dosyasını ezer. API anahtarı sadece `.env` içinde durur ve `init` onu `.gitignore`'a ekler.
+
+### Otomatik test kontrolü
+
+`tokenwise.toml`'a bir kontrol komutu yazarsan her değişiklik sana gösterilmeden önce projenin **geçici bir kopyasında** denenir:
+
+```toml
+[tokenwise]
+check = "{python} -m pytest -q -x"     # {python} = tokenwise'ı çalıştıran Python
+```
+
+Kontrol geçmezse komutun çıktısı (son 3000 karakter) modele geri gönderilir ve düzeltmesi istenir; o model iki denemede beceremezse merdivende bir üst modele geçilir. Hiçbiri geçemezse son değişiklik ve hata çıktısı gösterilir, dosyaya yazılmaz; yine de istersen `tokenwise apply` ile uygulayabilirsin. Asıl proje kontrol sırasında hiç değişmez.
 
 ### Önbellek
 
@@ -177,6 +190,8 @@ tokenwise/
 ├── pipeline.py   # bir isteğin baştan sona akışı (CLI, JSON ve benchmark ortak kullanır)
 ├── ledger.py     # maliyet kaydı (.tokenwise/ledger.db) ve özetler
 ├── pricing.py    # model fiyatları ve token → dolar hesabı
+├── checker.py    # kontrol komutunu geçici kopyada çalıştırma
+├── textio.py     # satır sonu (CRLF/LF) ve BOM koruyan okuma/yazma
 ├── benchmark.py  # baseline ile tokenwise karşılaştırması, geçici kopyada kontrol
 ├── llm.py        # Anthropic ve OpenAI uyumlu arka uçlar, SQLite önbellek
 └── prompts.py    # modellere giden tüm talimatlar

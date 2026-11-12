@@ -171,11 +171,19 @@ def ask(
     as_json: bool = typer.Option(
         False, "--json", help="Print the proposal as JSON and keep it for `tokenwise apply`."
     ),
+    check: str = typer.Option(
+        "", "--check", help='Command that must pass first, e.g. "pytest -q". Overrides the config.'
+    ),
+    no_check: bool = typer.Option(False, "--no-check", help="Skip the configured check."),
 ) -> None:
     """Make a code change with the least context and the fewest lines."""
     settings = load_settings(root)
     if no_cache:
         settings.cache = False
+    if check:
+        settings.check = check
+    if no_check:
+        settings.check = ""
     try:
         llm = make_llm(settings)
     except ConfigError as exc:
@@ -196,6 +204,8 @@ def ask(
     if as_json:
         if result.ok:
             _save_pending(settings, run_id, result)
+        if result.changes and result.check_passed is False:
+            _save_pending(settings, run_id, result)  # the user may still choose to apply it
         print(json.dumps({"run_id": run_id, **result.to_dict()}))
         raise typer.Exit(0 if result.ok else 1)
 
@@ -203,6 +213,17 @@ def ask(
         console.print(f"Files: [cyan]{', '.join(result.files)}[/]")
     if result.models:
         console.print(f"Difficulty: [cyan]{result.level}[/] → {' → '.join(result.models)}")
+    if result.changes and result.check_passed is False:
+        for change in result.changes:
+            console.print(
+                Syntax(change.diff, "diff", theme="ansi_dark", background_color="default")
+            )
+        console.print(f"[red]Check failed:[/] {result.check}")
+        console.print(result.check_output, markup=False, highlight=False)
+        console.print(_usage_table(result))
+        _save_pending(settings, run_id, result)
+        console.print("Not applied. Apply anyway with: tokenwise apply")
+        raise typer.Exit(1)
     if not result.ok:
         console.print(f"[red]No change produced:[/] {result.error}")
         console.print(_usage_table(result))
@@ -210,6 +231,8 @@ def ask(
 
     for change in result.changes:
         console.print(Syntax(change.diff, "diff", theme="ansi_dark", background_color="default"))
+    if result.check_passed:
+        console.print(f"[green]Check passed:[/] {result.check}")
     console.print(_usage_table(result))
     added, removed = result.lines
     console.print(

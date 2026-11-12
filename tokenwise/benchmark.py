@@ -9,17 +9,14 @@ command (for example its tests) decides whether the change works. The original n
 
 from __future__ import annotations
 
-import os
 import re
-import shutil
-import subprocess
-import sys
 import tempfile
 import time
 import tomllib
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from .checker import copy_project, run_command
 from .config import Settings
 from .editor import Change, EditError, apply_changes, resolve
 from .llm import LLM
@@ -30,9 +27,6 @@ from .textio import read_source
 
 METHODS = ("baseline", "tokenwise")
 CHECK_TIMEOUT = 300
-_COPY_IGNORE = shutil.ignore_patterns(
-    ".git", ".tokenwise", "node_modules", ".venv", "venv", "__pycache__"
-)
 _FILE_BLOCK = re.compile(
     r"^=== FILE: (?P<path>.+?) ===\n(?P<body>.*?)^=== END FILE ===", re.S | re.M
 )
@@ -112,25 +106,13 @@ def baseline(request: str, settings: Settings, llm: LLM, model: str) -> Result:
     return result
 
 
-def run_check(command: str, root: Path, checks_dir: Path) -> bool:
-    command = command.replace("{checks}", str(checks_dir)).replace("{python}", sys.executable)
-    env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(root), os.getenv("PYTHONPATH", "")])}
-    try:
-        done = subprocess.run(
-            command, shell=True, cwd=root, env=env, capture_output=True, timeout=CHECK_TIMEOUT
-        )
-    except subprocess.TimeoutExpired:
-        return False
-    return done.returncode == 0
-
-
 def run_task(
     task: Task, method: str, settings: Settings, llm: LLM, checks_dir: Path, model: str = ""
 ) -> Outcome:
     with tempfile.TemporaryDirectory(prefix="tokenwise-bench-") as tmp:
         copy = Path(tmp) / task.project.name
-        shutil.copytree(task.project, copy, ignore=_COPY_IGNORE)
-        local = replace(settings, root=copy, cache=False)
+        copy_project(task.project, copy)
+        local = replace(settings, root=copy, cache=False, check="")
 
         start = time.perf_counter()
         if method == "baseline":
@@ -143,7 +125,7 @@ def run_task(
         if result.ok:
             apply_changes(local, result.changes)
             if task.check:
-                passed = run_check(task.check, copy, checks_dir)
+                passed = run_command(task.check, copy, CHECK_TIMEOUT, checks_dir).passed
         elif task.check:
             passed = False
     return Outcome(task, method, result, passed, seconds)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import difflib
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -75,6 +76,8 @@ class Proposal:
     files_sent: list[str] = field(default_factory=list)
     model: str = ""
     error: str | None = None
+    check_passed: bool | None = None  # None = no check configured
+    check_output: str = ""
 
 
 def clean_path(line: str | None) -> str | None:
@@ -253,16 +256,19 @@ def propose(
     llm: LLM,
     all_files: list[str],
     models: list[str] | None = None,
+    verify: Callable[[list[Change]], object] | None = None,
 ) -> Proposal:
     """Asks each model in `models` (cheapest first) for edits, climbing to the next on failure.
 
     Each model gets ATTEMPTS_PER_MODEL tries with feedback. A NEED_FILES reply adds the file
-    and does not count as a failure.
+    and does not count as a failure. With `verify` (returns an object with .passed and
+    .output), a change that fails it counts as a failed attempt and its output is fed back.
     """
     models = models or list(settings.models)
     paths = list(dict.fromkeys(paths))
     replies: list[Reply] = []
     feedback = ""
+    last: Proposal | None = None
     for model in models:
         attempts = 0
         while attempts < ATTEMPTS_PER_MODEL:
@@ -287,13 +293,31 @@ def propose(
                 feedback = "Your reply had no valid edit blocks. Reply only with edit blocks."
                 continue
             try:
-                return Proposal(plan_changes(settings.root, edits), replies, paths, model=model)
+                changes = plan_changes(settings.root, edits)
             except EditError as exc:
                 feedback = (
                     f"Your previous edit could not be applied: {exc}. "
                     "Copy the SEARCH lines exactly from the files above."
                 )
+                continue
+            proposal = Proposal(changes, replies, paths, model=model)
+            if verify is None or not changes:
+                return proposal
+            check = verify(changes)
+            proposal.check_passed, proposal.check_output = check.passed, check.output
+            if check.passed:
+                return proposal
+            last = proposal
+            feedback = (
+                "Your previous change applied cleanly but the project's check failed:\n"
+                f"```\n{check.output}\n```\n"
+                "Write a corrected change. SEARCH must still match the ORIGINAL files above."
+            )
     tried = " → ".join(dict.fromkeys(models))
+    if last is not None:
+        last.replies = replies
+        last.error = f"the check still fails after trying {tried}"
+        return last
     return Proposal([], replies, paths, error=f"no applicable edit from {tried}")
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .checker import make_verifier
 from .config import Settings
 from .editor import Change, propose
 from .llm import LLM, Reply, Usage
@@ -25,6 +26,9 @@ class Result:
     model: str = ""
     error: str | None = None
     prices: dict = field(default_factory=dict)
+    check: str = ""
+    check_passed: bool | None = None
+    check_output: str = ""
 
     @property
     def ok(self) -> bool:
@@ -72,6 +76,11 @@ class Result:
                 for c in self.changes
             ],
             "lines": {"added": added, "removed": removed},
+            "check": {
+                "command": self.check,
+                "passed": self.check_passed,
+                "output": self.check_output,
+            },
             "usage": {
                 "input": u.input_tokens,
                 "output": u.output_tokens,
@@ -94,7 +103,7 @@ class Result:
 
 
 def run(request: str, settings: Settings, llm: LLM, model: str = "") -> Result:
-    result = Result(request=request, prices=settings.prices)
+    result = Result(request=request, prices=settings.prices, check=settings.check)
     all_files = list_source_files(settings)
     repo_map = build_map(settings, all_files)
 
@@ -111,8 +120,10 @@ def run(request: str, settings: Settings, llm: LLM, model: str = "") -> Result:
         level = difficulty(request, settings.root, chosen)
         result.level, result.models = NAMES[level], ladder(settings.models, level)
 
-    proposal = propose(request, chosen, settings, llm, all_files, result.models)
+    verify = make_verifier(settings, settings.check) if settings.check else None
+    proposal = propose(request, chosen, settings, llm, all_files, result.models, verify)
     result.replies += proposal.replies
+    result.check_passed, result.check_output = proposal.check_passed, proposal.check_output
     result.files = proposal.files_sent
     result.changes = proposal.changes
     result.model = proposal.model

@@ -230,7 +230,8 @@ export function activate(context: vscode.ExtensionContext): void {
       fail(error);
       return;
     }
-    if (!result.ok) {
+    const checkFailed = result.check?.passed === false && result.changes?.length > 0;
+    if (!result.ok && !checkFailed) {
       fail(new CliError(`no change produced: ${result.error} (cost ${formatUsd(result.cost_usd ?? 0)})`));
       await refresh();
       return;
@@ -240,8 +241,24 @@ export function activate(context: vscode.ExtensionContext): void {
     const summary =
       `${result.changes.length} file(s) · +${result.lines.added} −${result.lines.removed} lines · ` +
       `${formatUsd(result.cost_usd)} · ${result.model} (${result.difficulty})`;
-    const choice = await vscode.window.showInformationMessage(`Tokenwise: ${summary}`, "Apply", "Discard");
-    if (choice === "Apply") {
+    let choice: string | undefined;
+    if (checkFailed) {
+      output.appendLine(`Check failed: ${result.check?.command}\n${result.check?.output}`);
+      choice = await vscode.window.showWarningMessage(
+        `Tokenwise: the check failed (${result.check?.command}). ${summary}`,
+        "Show output",
+        "Apply anyway",
+        "Discard",
+      );
+      if (choice === "Show output") {
+        output.show();
+        choice = await vscode.window.showWarningMessage("Tokenwise: apply the change anyway?", "Apply anyway", "Discard");
+      }
+    } else {
+      const passed = result.check?.passed ? " · check passed" : "";
+      choice = await vscode.window.showInformationMessage(`Tokenwise: ${summary}${passed}`, "Apply", "Discard");
+    }
+    if (choice === "Apply" || choice === "Apply anyway") {
       await apply(root);
     } else {
       await refresh();
