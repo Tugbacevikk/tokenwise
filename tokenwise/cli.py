@@ -1,7 +1,9 @@
-"""Command line: tokenwise init | map | ask | undo | cache."""
+"""Command line: tokenwise init | map | ask | apply | undo | report | cache | benchmark."""
 
 from __future__ import annotations
 
+import csv
+import json
 import os
 from pathlib import Path
 
@@ -14,11 +16,12 @@ from rich.table import Table
 from . import __version__
 from . import llm as llm_module
 from .config import CONFIG_FILE, STATE_DIR, Settings, config_template, load_settings
-from .editor import apply_changes, propose, undo_last
-from .llm import LLM, CachedLLM, ConfigError, Reply, Usage, cache_path
+from .editor import Change, EditError, apply_changes, resolve, undo_last
+from .ledger import Ledger, ledger_path
+from .llm import LLM, CachedLLM, ConfigError, cache_path
+from .pipeline import Result, run
+from .pricing import format_usd, reply_cost
 from .repo_map import build_map, estimate_tokens, list_source_files, source_tokens
-from .router import NAMES, difficulty, ladder
-from .selector import select_files
 
 app = typer.Typer(
     help="tokenwise: get AI-written code with the fewest tokens and the fewest lines.",
@@ -28,15 +31,20 @@ app = typer.Typer(
 console = Console()
 
 RootOption = typer.Option(Path("."), "--root", "-r", help="Project folder.")
+PENDING_FILE = "pending.json"
 
 
 def make_llm(settings: Settings) -> LLM:
     """Replaced in tests with a fake model."""
-    try:
-        return llm_module.make_llm(settings)
-    except ConfigError as exc:
-        console.print(f"[red]{exc}[/]")
-        raise typer.Exit(1) from None
+    return llm_module.make_llm(settings)
+
+
+def _fail(message: str, as_json: bool = False) -> None:
+    if as_json:
+        print(json.dumps({"ok": False, "error": message}, ensure_ascii=False))
+    else:
+        console.print(f"[red]{message}[/]")
+    raise typer.Exit(1)
 
 
 def _version(value: bool) -> None:
@@ -110,29 +118,45 @@ def map_cmd(
     )
 
 
-def _usage_table(replies: list[Reply]) -> Table:
+def _usage_table(result: Result) -> Table:
     table = Table(title="Token usage", show_edge=False)
-    for column in ("step", "model", "input", "cache read", "output"):
+    for column in ("step", "model", "input", "cache read", "output", "cost"):
         table.add_column(column, justify="left" if column in ("step", "model") else "right")
-    total = Usage()
-    for reply in replies:
+    for reply in result.replies:
         u = reply.usage
-        total = total + u
         table.add_row(
             reply.role + (" [dim](cached)[/]" if reply.cached else ""),
             reply.model,
             f"{u.input_tokens:,}",
             f"{u.cache_read_tokens:,}",
             f"{u.output_tokens:,}",
+            format_usd(reply_cost(reply, result.prices)),
         )
+    total = result.usage
     table.add_row(
         "[bold]total[/]",
         "",
         f"[bold]{total.input_tokens:,}[/]",
         f"[bold]{total.cache_read_tokens:,}[/]",
         f"[bold]{total.output_tokens:,}[/]",
+        f"[bold]{format_usd(result.cost)}[/]",
     )
     return table
+
+
+def _save_pending(settings: Settings, run_id: int, result: Result) -> None:
+    settings.state_dir.mkdir(exist_ok=True)
+    data = {
+        "run_id": run_id,
+        "changes": [{"path": c.path, "old": c.old, "new": c.new} for c in result.changes],
+    }
+    (settings.state_dir / PENDING_FILE).write_text(json.dumps(data, ensure_ascii=False), "utf-8")
+
+
+def _apply(settings: Settings, ledger: Ledger, run_id: int, changes: list[Change]) -> None:
+    apply_changes(settings, changes)
+    ledger.mark_applied(run_id)
+    (settings.state_dir / PENDING_FILE).unlink(missing_ok=True)
 
 
 @app.command()
@@ -143,68 +167,174 @@ def ask(
     dry_run: bool = typer.Option(False, "--dry-run", help="Only show the change."),
     model: str = typer.Option("", "--model", "-m", help="Force one editor model, no climbing."),
     no_cache: bool = typer.Option(False, "--no-cache", help="Always ask the model."),
+    as_json: bool = typer.Option(
+        False, "--json", help="Print the proposal as JSON and keep it for `tokenwise apply`."
+    ),
 ) -> None:
     """Make a code change with the least context and the fewest lines."""
     settings = load_settings(root)
     if no_cache:
         settings.cache = False
-    llm = make_llm(settings)
-    files = list_source_files(settings)
-    repo_map = build_map(settings, files)
+    try:
+        llm = make_llm(settings)
+    except ConfigError as exc:
+        _fail(str(exc), as_json)
 
-    with console.status("Choosing files..."):
-        chosen, selector_reply = select_files(request, repo_map, settings, llm)
-    if not chosen:
-        console.print("[red]The selector found no relevant files.[/] Try a more specific request.")
-        console.print(_usage_table([selector_reply]))
-        raise typer.Exit(1)
-    console.print(f"Files: [cyan]{', '.join(chosen)}[/]")
-
-    if model:
-        models = [model]
-        console.print(f"Model: [cyan]{model}[/] (forced)")
+    if as_json:
+        try:
+            result = run(request, settings, llm, model)
+        except Exception as exc:  # the editor shows this to the user, so never crash silently
+            _fail(f"{type(exc).__name__}: {exc}", as_json=True)
     else:
-        level = difficulty(request, settings.root, chosen)
-        models = ladder(settings.models, level)
-        console.print(f"Difficulty: [cyan]{NAMES[level]}[/] → {' → '.join(models)}")
+        with console.status("Choosing files and writing the change..."):
+            result = run(request, settings, llm, model)
 
-    with console.status("Writing the change..."):
-        proposal = propose(request, chosen, settings, llm, files, models)
-    replies = [selector_reply, *proposal.replies]
+    ledger = Ledger(ledger_path(settings))
+    run_id = ledger.record(result)
 
-    if proposal.error or not proposal.changes:
-        console.print(f"[red]No change produced:[/] {proposal.error or 'the edit changed nothing'}")
-        console.print(_usage_table(replies))
+    if as_json:
+        if result.ok:
+            _save_pending(settings, run_id, result)
+        print(json.dumps({"run_id": run_id, **result.to_dict()}, ensure_ascii=False))
+        raise typer.Exit(0 if result.ok else 1)
+
+    if result.files:
+        console.print(f"Files: [cyan]{', '.join(result.files)}[/]")
+    if result.models:
+        console.print(f"Difficulty: [cyan]{result.level}[/] → {' → '.join(result.models)}")
+    if not result.ok:
+        console.print(f"[red]No change produced:[/] {result.error}")
+        console.print(_usage_table(result))
         raise typer.Exit(1)
 
-    added = removed = 0
-    for change in proposal.changes:
+    for change in result.changes:
         console.print(Syntax(change.diff, "diff", theme="ansi_dark", background_color="default"))
-        a, r = change.stats
-        added, removed = added + a, removed + r
-    console.print(_usage_table(replies))
+    console.print(_usage_table(result))
+    added, removed = result.lines
     console.print(
-        f"{len(proposal.changes)} file(s) · [green]+{added}[/] [red]-{removed}[/] lines · "
-        f"by {proposal.model}"
+        f"{len(result.changes)} file(s) · [green]+{added}[/] [red]-{removed}[/] lines · "
+        f"by {result.model}"
     )
 
     if dry_run:
+        _save_pending(settings, run_id, result)
+        console.print("Not applied. Apply later with: tokenwise apply")
         return
     if yes or Confirm.ask("Apply this change?", default=True):
-        apply_changes(settings, proposal.changes)
+        _apply(settings, ledger, run_id, result.changes)
         console.print("[green]Applied.[/] Undo with: tokenwise undo")
     else:
         console.print("Nothing changed.")
 
 
 @app.command()
-def undo(root: Path = RootOption) -> None:
+def apply(
+    root: Path = RootOption,
+    as_json: bool = typer.Option(False, "--json", help="Print the outcome as JSON."),
+) -> None:
+    """Apply the last proposal made with --json or --dry-run."""
+    settings = load_settings(root)
+    pending = settings.state_dir / PENDING_FILE
+    if not pending.exists():
+        _fail("Nothing to apply.", as_json)
+    data = json.loads(pending.read_text("utf-8"))
+    changes = [Change(c["path"], c["old"], c["new"]) for c in data["changes"]]
+    for change in changes:
+        try:
+            path = resolve(settings.root, change.path)
+        except EditError as exc:
+            _fail(str(exc), as_json)
+        current = path.read_text("utf-8") if path.exists() else None
+        if current != change.old:
+            _fail(f"{change.path} changed since the proposal; ask again.", as_json)
+    _apply(settings, Ledger(ledger_path(settings)), data["run_id"], changes)
+    paths = [c.path for c in changes]
+    if as_json:
+        print(json.dumps({"ok": True, "applied": paths}, ensure_ascii=False))
+    else:
+        console.print(f"[green]Applied:[/] {', '.join(paths)}. Undo with: tokenwise undo")
+
+
+@app.command()
+def undo(
+    root: Path = RootOption,
+    as_json: bool = typer.Option(False, "--json", help="Print the outcome as JSON."),
+) -> None:
     """Undo the last applied change."""
     restored = undo_last(load_settings(root))
-    if restored:
+    if as_json:
+        print(json.dumps({"ok": bool(restored), "restored": restored}, ensure_ascii=False))
+    elif restored:
         console.print(f"[green]Restored:[/] {', '.join(restored)}")
     else:
         console.print("Nothing to undo.")
+
+
+def _summary_table(columns: list[tuple[str, dict]]) -> Table:
+    table = Table(title="tokenwise report", show_edge=False)
+    table.add_column("")
+    for name, _ in columns:
+        table.add_column(name, justify="right")
+    rows = [
+        ("requests", lambda s: f"{s['runs']:,}"),
+        ("succeeded", lambda s: f"{s['ok']:,}"),
+        ("applied", lambda s: f"{s['applied']:,}"),
+        ("model calls", lambda s: f"{s['calls']:,}"),
+        ("cache hit rate", lambda s: f"{100 * s['cache_hit_rate']:.0f}%"),
+        ("input tokens", lambda s: f"{s['input_tokens']:,}"),
+        ("cache read tokens", lambda s: f"{s['cache_read_tokens']:,}"),
+        ("output tokens", lambda s: f"{s['output_tokens']:,}"),
+        ("lines +/-", lambda s: f"+{s['lines_added']:,} / -{s['lines_removed']:,}"),
+        ("total cost", lambda s: format_usd(s["cost_usd"])),
+        ("avg cost per request", lambda s: format_usd(s["avg_cost_per_run"])),
+    ]
+    for label, fmt in rows:
+        table.add_row(label, *(fmt(s) for _, s in columns))
+    return table
+
+
+@app.command()
+def report(
+    root: Path = RootOption,
+    days: int = typer.Option(7, "--days", "-d", help="Length of the recent window."),
+    csv_path: Path | None = typer.Option(None, "--csv", help="Also write every request to CSV."),
+    as_json: bool = typer.Option(False, "--json", help="Print the numbers as JSON."),
+) -> None:
+    """Show what tokenwise has spent: recent window and all time."""
+    settings = load_settings(root)
+    ledger = Ledger(ledger_path(settings))
+    recent, total = ledger.summary(days), ledger.summary(None)
+
+    if csv_path:
+        rows = ledger.rows()
+        with csv_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=list(rows[0]) if rows else ["id"])
+            writer.writeheader()
+            writer.writerows(rows)
+
+    if as_json:
+        print(json.dumps({"recent": recent, "all_time": total}, ensure_ascii=False))
+        return
+    if not total["runs"]:
+        console.print('No requests recorded yet. Try: tokenwise ask "..."')
+        return
+
+    console.print(_summary_table([(f"last {days} days", recent), ("all time", total)]))
+    models = Table(title="By model (all time)", show_edge=False)
+    for column in ("model", "calls", "cached", "input", "output", "cost"):
+        models.add_column(column, justify="left" if column == "model" else "right")
+    for m in total["by_model"]:
+        models.add_row(
+            m["model"],
+            f"{m['calls']:,}",
+            f"{m['cached']:,}",
+            f"{m['input']:,}",
+            f"{m['output']:,}",
+            format_usd(m["cost"]),
+        )
+    console.print(models)
+    if csv_path:
+        console.print(f"Wrote {csv_path}")
 
 
 @app.command()

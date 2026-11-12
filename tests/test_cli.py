@@ -105,3 +105,56 @@ def test_cache_command(project, settings, fake):
     assert "1 cached replies" in result.output
     result = runner.invoke(cli.app, ["cache", "-r", str(project), "--clear"])
     assert "Removed 1" in result.output
+
+
+def test_json_then_apply(project, monkeypatch, fake):
+    import json
+
+    monkeypatch.setattr(cli, "make_llm", lambda s: fake('["app/auth.py"]', LENGTH_CHECK))
+    original = (project / "app/auth.py").read_text()
+    result = runner.invoke(cli.app, ["ask", "check length", "-r", str(project), "--json"])
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["ok"] and data["run_id"] == 1 and data["changes"][0]["added"] == 2
+    assert (project / "app/auth.py").read_text() == original  # --json never writes
+
+    result = runner.invoke(cli.app, ["apply", "-r", str(project), "--json"])
+    assert json.loads(result.output) == {"ok": True, "applied": ["app/auth.py"]}
+    assert "too short" in (project / "app/auth.py").read_text()
+
+    result = runner.invoke(cli.app, ["apply", "-r", str(project), "--json"])
+    assert result.exit_code == 1 and "Nothing to apply" in result.output
+
+    report = json.loads(runner.invoke(cli.app, ["report", "-r", str(project), "--json"]).output)
+    assert report["all_time"]["applied"] == 1
+
+    undone = json.loads(runner.invoke(cli.app, ["undo", "-r", str(project), "--json"]).output)
+    assert undone == {"ok": True, "restored": ["app/auth.py"]}
+
+
+def test_apply_refuses_when_file_changed(project, monkeypatch, fake):
+    monkeypatch.setattr(cli, "make_llm", lambda s: fake('["app/auth.py"]', LENGTH_CHECK))
+    runner.invoke(cli.app, ["ask", "x", "-r", str(project), "--dry-run"])
+    (project / "app/auth.py").write_text("changed\n")
+    result = runner.invoke(cli.app, ["apply", "-r", str(project)])
+    assert result.exit_code == 1 and "changed since the proposal" in result.output
+
+
+def test_json_failure_is_json(project, monkeypatch, fake):
+    import json
+
+    monkeypatch.setattr(cli, "make_llm", lambda s: fake("[]"))
+    result = runner.invoke(cli.app, ["ask", "x", "-r", str(project), "--json"])
+    assert result.exit_code == 1
+    assert json.loads(result.output)["ok"] is False
+
+
+def test_report_table_and_csv(project, monkeypatch, fake, tmp_path):
+    assert "No requests" in runner.invoke(cli.app, ["report", "-r", str(project)]).output
+    monkeypatch.setattr(cli, "make_llm", lambda s: fake('["app/auth.py"]', LENGTH_CHECK))
+    runner.invoke(cli.app, ["ask", "x", "-r", str(project), "-y"])
+    out = tmp_path / "runs.csv"
+    result = runner.invoke(cli.app, ["report", "-r", str(project), "--csv", str(out)])
+    assert result.exit_code == 0, result.output
+    assert "last 7 days" in result.output and "claude-sonnet-5-5" in result.output
+    assert out.read_text().splitlines()[0].startswith("id,ts,method,request")

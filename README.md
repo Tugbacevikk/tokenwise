@@ -43,6 +43,10 @@ tokenwise ask "..." -m claude-opus-5-5   # tek bir modeli zorla, merdiven yok
 tokenwise ask "..." --no-cache # önbelleğe bakma
 tokenwise undo                 # son uygulanan değişikliği geri al
 tokenwise cache                # önbellekte kaç cevap var; --clear ile temizle
+tokenwise report               # son 7 gün ve tüm zaman: istek, token, maliyet, model dağılımı
+tokenwise report --csv runs.csv  # her isteği CSV'ye aktar
+tokenwise ask "..." --json     # sonucu JSON olarak ver (VS Code eklentisi bunu kullanır)
+tokenwise apply                # --json / --dry-run ile bekleyen son öneriyi uygula
 ```
 
 Başka bir klasör için her komuta `--root <klasör>` verebilirsin.
@@ -79,6 +83,15 @@ max_files = 8
 
 Cevaplar `.tokenwise/cache.db` (SQLite) içinde tutulur. Anahtar; model, talimat ve dosya içerikleri dahil tüm istek metnidir. Gönderilen bir dosya değişirse anahtar da değişir, bu yüzden eski bir cevap asla yanlış dosyaya uygulanmaz.
 
+### Maliyet kaydı
+
+Her istek ve her model çağrısı `.tokenwise/ledger.db` içine yazılır: token sayıları, önbellekten gelip gelmediği, dolar maliyeti, değişen satır sayısı ve uygulanıp uygulanmadığı. Claude fiyatları [resmî fiyat sayfasından](https://platform.claude.com/docs/en/about-claude/pricing) alınıp `pricing.py`'ye yazılmıştır; önbellekten dönen cevap ve fiyatı bilinmeyen modeller (yerel modeller) 0 sayılır. Başka bir model için `tokenwise.toml`'a fiyat ekleyebilirsin:
+
+```toml
+[tokenwise.prices]
+"gpt-4o-mini" = [0.15, 0.15, 0.075, 0.60]   # input, cache write, cache read, output ($ / 1M token)
+```
+
 ## Neden "edit blokları"?
 
 Düzenleyici model değişiklikleri şu biçimde döndürür:
@@ -106,6 +119,9 @@ tokenwise/
 ├── selector.py   # ucuz modelle dosya seçimi
 ├── router.py     # zorluk tahmini ve model merdiveni
 ├── editor.py     # edit blokları, model merdiveninde tırmanma, uygulama ve geri alma
+├── pipeline.py   # bir isteğin baştan sona akışı (CLI, JSON ve benchmark ortak kullanır)
+├── ledger.py     # maliyet kaydı (.tokenwise/ledger.db) ve özetler
+├── pricing.py    # model fiyatları ve token → dolar hesabı
 ├── llm.py        # Anthropic ve OpenAI uyumlu arka uçlar, SQLite önbellek
 └── prompts.py    # modellere giden tüm talimatlar
 ```
@@ -123,7 +139,7 @@ Testler sahte bir modelle çalışır, API'ye para harcamaz. Her push'ta GitHub 
 
 - [x] Aşama 0–1: iskelet, proje haritası, dosya seçici, edit blokları, uygulama/geri alma
 - [x] Aşama 2: zorluğa göre model seçimi ve yükseltme, istek önbelleği, yerel model desteği (Ollama)
-- [ ] Aşama 3: maliyet kaydı (SQLite) ve `tokenwise report`
+- [x] Aşama 3: maliyet kaydı (SQLite), `tokenwise report`, `--json` ve `apply`
 - [ ] Aşama 4: 20 görevlik karşılaştırma testi, sonuç tablosu
 - [ ] Aşama 5: VS Code eklentisi
 - [ ] Aşama 6: PyPI ve Marketplace yayını

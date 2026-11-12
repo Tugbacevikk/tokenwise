@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import tomllib
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -38,6 +38,11 @@ models = {models}
 extensions = [".py", ".js", ".jsx", ".ts", ".tsx"]
 # Most files sent to the editor in one request
 max_files = 8
+
+# Prices in USD per million tokens: [input, cache_write, cache_read, output].
+# Claude models are built in; add any other model here (local models cost 0).
+# [tokenwise.prices]
+# "my-model" = [1.0, 1.25, 0.1, 5.0]
 """
 
 
@@ -66,6 +71,7 @@ class Settings:
     max_files: int = 8
     max_output_tokens: int = 4096
     cache: bool = True
+    prices: dict = field(default_factory=dict)
 
     @property
     def state_dir(self) -> Path:

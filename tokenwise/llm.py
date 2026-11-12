@@ -114,6 +114,15 @@ class CachedLLM:
         )
         self.db.commit()
 
+    def close(self) -> None:
+        self.db.close()
+
+    def __del__(self) -> None:
+        try:
+            self.db.close()
+        except Exception:
+            pass
+
     @staticmethod
     def key(model: str, system: str, prompt: str, max_tokens: int) -> str:
         raw = json.dumps([model, system, prompt, max_tokens])
