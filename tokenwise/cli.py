@@ -41,7 +41,7 @@ def make_llm(settings: Settings) -> LLM:
 
 def _fail(message: str, as_json: bool = False) -> None:
     if as_json:
-        print(json.dumps({"ok": False, "error": message}, ensure_ascii=False))
+        print(json.dumps({"ok": False, "error": message}))
     else:
         console.print(f"[red]{message}[/]")
     raise typer.Exit(1)
@@ -195,7 +195,7 @@ def ask(
     if as_json:
         if result.ok:
             _save_pending(settings, run_id, result)
-        print(json.dumps({"run_id": run_id, **result.to_dict()}, ensure_ascii=False))
+        print(json.dumps({"run_id": run_id, **result.to_dict()}))
         raise typer.Exit(0 if result.ok else 1)
 
     if result.files:
@@ -250,7 +250,7 @@ def apply(
     _apply(settings, Ledger(ledger_path(settings)), data["run_id"], changes)
     paths = [c.path for c in changes]
     if as_json:
-        print(json.dumps({"ok": True, "applied": paths}, ensure_ascii=False))
+        print(json.dumps({"ok": True, "applied": paths}))
     else:
         console.print(f"[green]Applied:[/] {', '.join(paths)}. Undo with: tokenwise undo")
 
@@ -263,7 +263,7 @@ def undo(
     """Undo the last applied change."""
     restored = undo_last(load_settings(root))
     if as_json:
-        print(json.dumps({"ok": bool(restored), "restored": restored}, ensure_ascii=False))
+        print(json.dumps({"ok": bool(restored), "restored": restored}))
     elif restored:
         console.print(f"[green]Restored:[/] {', '.join(restored)}")
     else:
@@ -313,7 +313,7 @@ def report(
             writer.writerows(rows)
 
     if as_json:
-        print(json.dumps({"recent": recent, "all_time": total}, ensure_ascii=False))
+        print(json.dumps({"recent": recent, "all_time": total}))
         return
     if not total["runs"]:
         console.print('No requests recorded yet. Try: tokenwise ask "..."')

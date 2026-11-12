@@ -92,6 +92,21 @@ Her istek ve her model çağrısı `.tokenwise/ledger.db` içine yazılır: toke
 "gpt-4o-mini" = [0.15, 0.15, 0.075, 0.60]   # input, cache write, cache read, output ($ / 1M token)
 ```
 
+## VS Code eklentisi
+
+`vscode-extension/` klasöründe. Komut paletinden **Tokenwise: Ask for a change** ile isteği yazarsın, öneri VS Code'un kendi fark görünümünde açılır, **Apply** ya da **Discard** seçersin. Gezgin kenar çubuğundaki **Tokenwise** paneli son 7 günün ve tüm zamanın maliyetini, önbellek isabet oranını ve model bazında harcamayı gösterir; durum çubuğunda haftalık maliyet görünür. Eklenti arka planda `tokenwise ask --json`, `apply`, `undo` ve `report --json` komutlarını çalıştırır.
+
+Kurulum (paket hâline getirip VS Code'a yükleme):
+
+```powershell
+cd vscode-extension
+npm install
+npm run package                                   # tokenwise-1.0.0.vsix oluşur
+code --install-extension tokenwise-1.0.0.vsix
+```
+
+Ayarlardan `tokenwise.command` alanına tokenwise programının yolunu yaz (örneğin `C:\Users\ADIL CEVIK\tokenwise\.venv\Scripts\tokenwise.exe`); boş bırakırsan açık projenin `.venv` klasörüne, sonra PATH'e bakar.
+
 ## Karşılaştırma testi (benchmark)
 
 `tokenwise benchmark` her görevi iki yöntemle çalıştırır ve sonuçları karşılaştırır:
@@ -159,6 +174,8 @@ tokenwise/
 ├── benchmark.py  # baseline ile tokenwise karşılaştırması, geçici kopyada kontrol
 ├── llm.py        # Anthropic ve OpenAI uyumlu arka uçlar, SQLite önbellek
 └── prompts.py    # modellere giden tüm talimatlar
+vscode-extension/ # VS Code eklentisi (TypeScript), CLI'ı JSON modunda çağırır
+benchmark/        # örnek proje, görevler ve kontrol testleri
 ```
 
 ## Geliştirme
@@ -177,7 +194,7 @@ Testler sahte bir modelle çalışır, API'ye para harcamaz. Her push'ta GitHub 
 - [x] Aşama 3: maliyet kaydı (SQLite), `tokenwise report`, `--json` ve `apply`
 - [x] Aşama 4: karşılaştırma testi altyapısı ve örnek görevler (`tokenwise benchmark`)
 - [ ] Kendi projelerinden 20 görevle ölçüm ve sonuç tablosu
-- [ ] Aşama 5: VS Code eklentisi
+- [x] Aşama 5: VS Code eklentisi (fark görünümü, uygula/geri al, maliyet paneli)
 - [ ] Aşama 6: PyPI ve Marketplace yayını
 
 ## Lisans

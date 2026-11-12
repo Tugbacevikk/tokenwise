@@ -1,0 +1,70 @@
+{
+  "name": "tokenwise",
+  "displayName": "tokenwise",
+  "description": "Get AI-written code with the fewest tokens and the fewest lines: minimal context, minimal edits, cost tracking.",
+  "version": "1.0.0",
+  "publisher": "tugbacevik",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Tugbacevikk/tokenwise"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": ["Programming Languages", "Machine Learning", "Other"],
+  "keywords": ["ai", "claude", "llm", "tokens", "cost"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "tokenwise.ask", "title": "Ask for a change", "category": "Tokenwise", "icon": "$(sparkle)" },
+      { "command": "tokenwise.apply", "title": "Apply pending change", "category": "Tokenwise" },
+      { "command": "tokenwise.undo", "title": "Undo last change", "category": "Tokenwise" },
+      { "command": "tokenwise.refresh", "title": "Refresh cost report", "category": "Tokenwise", "icon": "$(refresh)" },
+      { "command": "tokenwise.showLog", "title": "Show log", "category": "Tokenwise" }
+    ],
+    "views": {
+      "explorer": [
+        { "id": "tokenwise.report", "name": "Tokenwise" }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        { "command": "tokenwise.ask", "when": "view == tokenwise.report", "group": "navigation" },
+        { "command": "tokenwise.refresh", "when": "view == tokenwise.report", "group": "navigation" }
+      ]
+    },
+    "configuration": {
+      "title": "Tokenwise",
+      "properties": {
+        "tokenwise.command": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Path to the `tokenwise` program, e.g. `C:\\Users\\me\\tokenwise\\.venv\\Scripts\\tokenwise.exe`. Empty = look in the workspace's `.venv`, then on PATH."
+        },
+        "tokenwise.model": {
+          "type": "string",
+          "default": "",
+          "description": "Force one editor model for every request (empty = let tokenwise choose)."
+        },
+        "tokenwise.reportDays": {
+          "type": "number",
+          "default": 7,
+          "description": "Length of the recent window in the cost report."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -watch -p .",
+    "package": "vsce package --no-dependencies",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.1.0",
+    "typescript": "^5.5.0"
+  }
+}
