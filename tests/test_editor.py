@@ -61,8 +61,8 @@ def test_plan_changes_tolerates_blank_edges(project):
 def test_plan_changes_errors(project):
     with pytest.raises(EditError, match="not found"):
         plan_changes(project, [Edit("app/auth.py", "nope\n", "x\n")])
-    with pytest.raises(EditError, match="matches 3"):
-        plan_changes(project, [Edit("app/auth.py", "(user, password)", "()")])
+    with pytest.raises(EditError, match="matches 2"):
+        plan_changes(project, [Edit("app/auth.py", "    return ", "    yield ")])
     with pytest.raises(EditError, match="not empty"):
         plan_changes(project, [Edit("app/auth.py", "", "x\n")])
     with pytest.raises(EditError, match="inside the project"):
@@ -126,3 +126,65 @@ def test_propose_uses_settings_ladder_by_default(settings, fake):
     llm = fake(LENGTH_CHECK)
     proposal = propose("x", ["app/auth.py"], settings, llm, ALL_FILES)
     assert proposal.model == settings.models[0] == llm.calls[0]["model"]
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["**app/auth.py**", "`app/auth.py`", "### app/auth.py", "File: app/auth.py", "app/auth.py:"],
+)
+def test_decorated_path_lines(line):
+    text = f"{line}\n```python\n<<<<<<< SEARCH\nx\n=======\ny\n>>>>>>> REPLACE\n```"
+    assert parse_edits(text) == [Edit("app/auth.py", "x\n", "y\n")]
+
+
+def test_loose_markers_and_missing_paths():
+    text = (
+        "Here is the change:\n"
+        "```\n<<<<<SEARCH\na\n=====\nb\n>>>>> REPLACE\n```\n"
+        "```\n<<<<<<< SEARCH\nc\n=======\nd\n>>>>>>> REPLACE\n```"
+    )
+    assert parse_edits(text) == []  # no path anywhere and no default
+    assert parse_edits(text, default_path="one.py") == [
+        Edit("one.py", "a\n", "b\n"),
+        Edit("one.py", "c\n", "d\n"),
+    ]
+    later = "b.py\n<<<<<<< SEARCH\n1\n=======\n2\n>>>>>>> REPLACE\n" + text.split(":\n", 1)[1]
+    assert {e.path for e in parse_edits(later)} == {"b.py"}  # follows the previous block
+
+
+def test_clean_path_rejects_prose():
+    from tokenwise.editor import clean_path
+
+    assert clean_path("Here is the change:") is None
+    assert clean_path("```python") is None
+    assert clean_path("Makefile") is None
+    assert clean_path("./src/app.ts") == "src/app.ts"
+
+
+def test_wrong_indentation_is_fixed(project):
+    # the model dropped the 4-space indent of the method body
+    edit = Edit("app/util.py", "return 0\n", "if self:\n    return 1\nreturn 0\n")
+    (change,) = plan_changes(project, [edit])
+    assert change.new.endswith("        if self:\n            return 1\n        return 0\n")
+
+
+def test_too_much_indentation_is_fixed(project):
+    edit = Edit(
+        "app/auth.py",
+        "        def check(user, password):\n",
+        "        def check(user, password=None):\n",
+    )
+    (change,) = plan_changes(project, [edit])
+    assert "\ndef check(user, password=None):\n" in change.new
+
+
+def test_ambiguous_loose_match_still_fails(project):
+    (project / "app/dup.py").write_text("def a():\n    pass\n\ndef b():\n    pass\n")
+    with pytest.raises(EditError, match="not found"):
+        plan_changes(project, [Edit("app/dup.py", "\tpass\n", "\treturn\n")])
+
+
+def test_propose_uses_the_only_file_when_path_is_missing(settings, fake):
+    reply = "```\n<<<<<<< SEARCH\n    return True\n=======\n    return False\n>>>>>>> REPLACE\n```"
+    proposal = propose("x", ["app/auth.py"], settings, fake(reply), ALL_FILES, models=["m"])
+    assert proposal.changes and "return False" in proposal.changes[0].new

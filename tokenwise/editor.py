@@ -18,11 +18,15 @@ ATTEMPTS_PER_MODEL = 2
 MAX_LISTED_FILES = 200
 UNDO_FILE = "last_change.json"
 
+# Lenient on purpose: small local models write 4–9 marker characters, drop the space before
+# SEARCH, or put the file name in bold, backticks or a heading.
 _EDIT_BLOCK = re.compile(
-    r"^(?P<path>[^\n]+?)[ \t]*\n(?:```[^\n]*\n)?"
-    r"<<<<<<< SEARCH\n(?P<search>.*?)^=======\n(?P<replace>.*?)^>>>>>>> REPLACE",
+    r"(?:^(?P<path>[^\n]*?)[ \t]*\n)?(?:[ \t]*```[^\n]*\n)?"
+    r"^[ \t]*<{4,9}[ \t]*SEARCH[ \t]*\n(?P<search>.*?)^[ \t]*={4,9}[ \t]*\n"
+    r"(?P<replace>.*?)^[ \t]*>{4,9}[ \t]*REPLACE[ \t]*$",
     re.S | re.M,
 )
+_PATH_PREFIX = re.compile(r"^(?:#+\s*|(?:file|path|filename)\s*:\s*)", re.I)
 _NEED_FILES = re.compile(r"^NEED_FILES:\s*(.+)$", re.M)
 
 
@@ -73,10 +77,29 @@ class Proposal:
     error: str | None = None
 
 
-def parse_edits(text: str) -> list[Edit]:
-    edits = []
-    for match in _EDIT_BLOCK.finditer(text):
-        path = normalize_path(match.group("path"))
+def clean_path(line: str | None) -> str | None:
+    """The file path on the line before an edit block, or None if the line is not a path."""
+    if not line:
+        return None
+    line = line.strip().strip("*_`").strip()
+    line = _PATH_PREFIX.sub("", line).strip().strip("*_`").rstrip(":").strip()
+    if not line or line.startswith(("```", "<", "=", ">")) or " " in line:
+        return None
+    if "." not in line and "/" not in line:
+        return None
+    return normalize_path(line)
+
+
+def parse_edits(text: str, default_path: str | None = None) -> list[Edit]:
+    """Edit blocks in a reply. A block without a usable path line goes to the previous block's
+    file, or to `default_path` when only one file was sent."""
+    edits: list[Edit] = []
+    for match in _EDIT_BLOCK.finditer(text.replace("\r\n", "\n")):
+        path = clean_path(match.group("path"))
+        if path is None:
+            path = edits[-1].path if edits else default_path
+        if path is None:
+            continue
         edits.append(Edit(path, match.group("search"), match.group("replace")))
     return edits
 
@@ -106,6 +129,66 @@ def _strip_blank_edges(text: str) -> str:
     return "".join(lines)
 
 
+def _line_matches(text: str, search: str) -> list[int]:
+    """Where SEARCH occurs starting at the beginning of a line (never in the middle of one)."""
+    if not search:
+        return []
+    hits, start = [], 0
+    while (at := text.find(search, start)) != -1:
+        if at == 0 or text[at - 1] == "\n":
+            hits.append(at)
+        start = at + 1
+    return hits
+
+
+def _indent(line: str) -> str:
+    return line[: len(line) - len(line.lstrip())]
+
+
+def _replace_ignoring_indent(text: str, search: str, replace: str) -> str | None:
+    """Matches SEARCH line by line ignoring leading/trailing whitespace. On exactly one match,
+    shifts REPLACE by the indentation the model got wrong and returns the new text."""
+    want = [line.strip() for line in search.splitlines()]
+    while want and not want[0]:
+        want.pop(0)
+    while want and not want[-1]:
+        want.pop()
+    if not want:
+        return None
+    lines = text.splitlines(keepends=True)
+    hits = [
+        i
+        for i in range(len(lines) - len(want) + 1)
+        if [line.strip() for line in lines[i : i + len(want)]] == want
+    ]
+    if len(hits) != 1:
+        return None
+    start = hits[0]
+    first_search = next(line for line in search.splitlines() if line.strip())
+    have, had = _indent(lines[start]), _indent(first_search)
+
+    shifted = []
+    for line in replace.splitlines():
+        if not line.strip():
+            shifted.append("")
+        elif len(have) >= len(had):
+            shifted.append(
+                have[len(had) :] + line if line.startswith(had) else have + line.lstrip()
+            )
+        else:
+            cut = len(had) - len(have)
+            shifted.append(line[cut:] if line[:cut].strip() == "" else line.lstrip())
+    while shifted and not shifted[0]:
+        shifted.pop(0)
+    while shifted and not shifted[-1]:
+        shifted.pop()
+    block = "".join(f"{line}\n" for line in shifted)
+    end = start + len(want)
+    if end == len(lines) and not lines[-1].endswith("\n"):
+        block = block[:-1]
+    return "".join(lines[:start]) + block + "".join(lines[end:])
+
+
 def plan_changes(root: Path, edits: list[Edit]) -> list[Change]:
     """Applies edits in memory. Raises EditError if any SEARCH part does not match exactly once."""
     originals: dict[str, str | None] = {}
@@ -127,14 +210,20 @@ def plan_changes(root: Path, edits: list[Edit]) -> list[Change]:
             continue
 
         search, replace = edit.search, edit.replace
-        if text.count(search) == 0:
+        hits = _line_matches(text, search)
+        if not hits:
             search, replace = _strip_blank_edges(search), _strip_blank_edges(replace)
-        count = text.count(search) if search else 0
-        if count == 0:
-            raise EditError(f"{edit.path}: SEARCH text not found")
-        if count > 1:
-            raise EditError(f"{edit.path}: SEARCH text matches {count} places, make it unique")
-        working[edit.path] = text.replace(search, replace, 1)
+            hits = _line_matches(text, search)
+        if not hits:
+            loose = _replace_ignoring_indent(text, edit.search, edit.replace)
+            if loose is None:
+                raise EditError(f"{edit.path}: SEARCH text not found")
+            working[edit.path] = loose
+            continue
+        if len(hits) > 1:
+            raise EditError(f"{edit.path}: SEARCH text matches {len(hits)} places, make it unique")
+        at = hits[0]
+        working[edit.path] = text[:at] + replace + text[at + len(search) :]
 
     return [Change(p, originals[p], working[p]) for p in working if working[p] != originals[p]]
 
@@ -193,7 +282,7 @@ def propose(
                 feedback = ""
                 continue
             attempts += 1
-            edits = parse_edits(reply.text)
+            edits = parse_edits(reply.text, paths[0] if len(paths) == 1 else None)
             if not edits:
                 feedback = "Your reply had no valid edit blocks. Reply only with edit blocks."
                 continue
