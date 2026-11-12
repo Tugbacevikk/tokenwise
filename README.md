@@ -6,23 +6,25 @@
 Modele bütün projeyi göndermek ve bütün dosyayı yeniden yazdırmak yerine tokenwise:
 
 1. Projenin **haritasını** çıkarır: dosya yolları ve fonksiyon/sınıf imzaları, gövdeler olmadan.
-2. **Ucuz bir model** (Haiku) haritaya bakıp işin hangi dosyalara ihtiyaç duyduğunu seçer.
-3. **Sadece o dosyalar** düzenleyici modele (Sonnet) gönderilir.
-4. Model dosyayı baştan yazmaz, sadece **değişen satırları** döndürür.
-5. Değişiklik renkli fark (diff) olarak gösterilir, onay verirsen uygulanır, istersen geri alınır.
-6. Her adımda harcanan token tablo olarak yazdırılır.
+2. **En ucuz model** haritaya bakıp işin hangi dosyalara ihtiyaç duyduğunu seçer.
+3. **Sadece o dosyalar** düzenleyici modele gönderilir.
+4. **Yönlendirici** isteğin zorluğunu kurallarla tahmin eder (model çağrısı yok) ve model merdiveninin uygun basamağından başlar; model beceremezse bir üst modele geçer.
+5. Model dosyayı baştan yazmaz, sadece **değişen satırları** döndürür.
+6. Değişiklik renkli fark (diff) olarak gösterilir, onay verirsen uygulanır, istersen geri alınır.
+7. Birebir aynı istek tekrar gelirse cevap **önbellekten** döner, model çağrılmaz.
+8. Her adımda harcanan token tablo olarak yazdırılır.
 
-Sabit kısımlar (talimat + harita) API'nin *prompt caching* özelliğiyle işaretlenir; aynı oturumda tekrar okunduklarında çok daha ucuza gelir.
+Claude API'de sabit kısımlar (talimat + harita) *prompt caching* ile işaretlenir; aynı oturumda tekrar okunduklarında çok daha ucuza gelir.
 
 ## Kurulum
 
 Python 3.11 veya üzeri gerekir.
 
-```bash
+```powershell
 git clone https://github.com/Tugbacevikk/tokenwise
 cd tokenwise
 python -m venv .venv
-# Windows: .venv\Scripts\activate    Linux/macOS: source .venv/bin/activate
+.venv\Scripts\activate          # Linux/macOS: source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
@@ -30,16 +32,33 @@ pip install -e ".[dev]"
 
 Çalışmak istediğin projenin klasöründe:
 
-```bash
+```powershell
 tokenwise init                 # tokenwise.toml ve .env oluşturur, API anahtarını sorar
+tokenwise init --local         # API yerine yerel model (Ollama) için ayar dosyası
 tokenwise map                  # proje haritası ve "tüm kaynak vs harita" token karşılaştırması
 tokenwise ask "login fonksiyonuna şifre uzunluk kontrolü ekle"
 tokenwise ask "..." --dry-run  # sadece farkı göster, dosyaya yazma
 tokenwise ask "..." -y         # onay sormadan uygula
+tokenwise ask "..." -m claude-opus-5-5   # tek bir modeli zorla, merdiven yok
+tokenwise ask "..." --no-cache # önbelleğe bakma
 tokenwise undo                 # son uygulanan değişikliği geri al
+tokenwise cache                # önbellekte kaç cevap var; --clear ile temizle
 ```
 
 Başka bir klasör için her komuta `--root <klasör>` verebilirsin.
+
+### Yerel modelle (API anahtarsız) kullanım
+
+[Ollama](https://ollama.com) kurulu olsun, bir kodlama modeli indir ve projende `--local` ile başla:
+
+```powershell
+ollama pull qwen2.5-coder:7b   # 4 GB VRAM'li ekran kartında çalışır; daha hızlı istersen qwen2.5-coder:3b
+cd <projen>
+tokenwise init --local
+tokenwise ask "..." --dry-run
+```
+
+`init --local`, `provider = "openai"` ve `base_url = "http://localhost:11434/v1"` yazar; LM Studio, vLLM ya da OpenAI'nin kendisi gibi OpenAI uyumlu her sunucu aynı yoldan çalışır (anahtar gerekiyorsa `OPENAI_API_KEY` ortam değişkeni).
 
 ### Ayarlar
 
@@ -47,13 +66,18 @@ Başka bir klasör için her komuta `--root <klasör>` verebilirsin.
 
 ```toml
 [tokenwise]
-selector_model = "claude-haiku-5-5"
-editor_model = "claude-sonnet-5-5"
+provider = "anthropic"          # ya da "openai" (Ollama, LM Studio, vLLM...)
+# base_url = "http://localhost:11434/v1"
+models = ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"]   # ucuzdan güçlüye
 extensions = [".py", ".js", ".jsx", ".ts", ".tsx"]
 max_files = 8
 ```
 
-Model adları `TOKENWISE_SELECTOR_MODEL` ve `TOKENWISE_EDITOR_MODEL` ortam değişkenleriyle de değiştirilebilir. API anahtarı sadece `.env` içinde durur ve `init` onu `.gitignore`'a ekler.
+`models` bir merdivendir: dosya seçici hep ilkini kullanır; düzenleyici, yönlendiricinin seçtiği basamaktan başlar (kolay → 1., orta → 2., zor → 3.) ve her basamakta 2 deneme yapıp bir üste çıkar. Tek model yazarsan merdiven yoktur, sadece tekrar dener. `TOKENWISE_PROVIDER`, `TOKENWISE_BASE_URL` ve `TOKENWISE_MODELS` (virgülle ayrılmış) ortam değişkenleri ayar dosyasını ezer. API anahtarı sadece `.env` içinde durur ve `init` onu `.gitignore`'a ekler.
+
+### Önbellek
+
+Cevaplar `.tokenwise/cache.db` (SQLite) içinde tutulur. Anahtar; model, talimat ve dosya içerikleri dahil tüm istek metnidir. Gönderilen bir dosya değişirse anahtar da değişir, bu yüzden eski bir cevap asla yanlış dosyaya uygulanmaz.
 
 ## Neden "edit blokları"?
 
@@ -76,12 +100,13 @@ Modellerin yazdığı klasik *unified diff*'te satır numaraları sık sık kaya
 
 ```
 tokenwise/
-├── cli.py        # komutlar: init, map, ask, undo
+├── cli.py        # komutlar: init, map, ask, undo, cache
 ├── config.py     # ayarlar: varsayılanlar → tokenwise.toml → ortam değişkenleri
 ├── repo_map.py   # proje haritası (Python: ast, JS/TS: düzenli ifadeler)
 ├── selector.py   # ucuz modelle dosya seçimi
-├── editor.py     # edit blokları, farkın hesaplanması, uygulama ve geri alma
-├── llm.py        # Anthropic API sarmalayıcısı ve token sayımı
+├── router.py     # zorluk tahmini ve model merdiveni
+├── editor.py     # edit blokları, model merdiveninde tırmanma, uygulama ve geri alma
+├── llm.py        # Anthropic ve OpenAI uyumlu arka uçlar, SQLite önbellek
 └── prompts.py    # modellere giden tüm talimatlar
 ```
 
@@ -97,7 +122,7 @@ Testler sahte bir modelle çalışır, API'ye para harcamaz. Her push'ta GitHub 
 ## Yol haritası
 
 - [x] Aşama 0–1: iskelet, proje haritası, dosya seçici, edit blokları, uygulama/geri alma
-- [ ] Aşama 2: işin zorluğuna göre model seçimi (Haiku / Sonnet / Opus), istek önbelleği
+- [x] Aşama 2: zorluğa göre model seçimi ve yükseltme, istek önbelleği, yerel model desteği (Ollama)
 - [ ] Aşama 3: maliyet kaydı (SQLite) ve `tokenwise report`
 - [ ] Aşama 4: 20 görevlik karşılaştırma testi, sonuç tablosu
 - [ ] Aşama 5: VS Code eklentisi

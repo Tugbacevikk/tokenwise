@@ -13,7 +13,7 @@ from .llm import LLM, Reply
 from .prompts import EDITOR_SYSTEM
 from .selector import is_safe_path, normalize_path
 
-MAX_ATTEMPTS = 3
+ATTEMPTS_PER_MODEL = 2
 MAX_LISTED_FILES = 200
 UNDO_FILE = "last_change.json"
 
@@ -68,6 +68,7 @@ class Proposal:
     changes: list[Change]
     replies: list[Reply] = field(default_factory=list)
     files_sent: list[str] = field(default_factory=list)
+    model: str = ""
     error: str | None = None
 
 
@@ -153,39 +154,54 @@ def build_prompt(
 
 
 def propose(
-    request: str, paths: list[str], settings: Settings, llm: LLM, all_files: list[str]
+    request: str,
+    paths: list[str],
+    settings: Settings,
+    llm: LLM,
+    all_files: list[str],
+    models: list[str] | None = None,
 ) -> Proposal:
+    """Asks each model in `models` (cheapest first) for edits, climbing to the next on failure.
+
+    Each model gets ATTEMPTS_PER_MODEL tries with feedback. A NEED_FILES reply adds the file
+    and does not count as a failure.
+    """
+    models = models or list(settings.models)
     paths = list(dict.fromkeys(paths))
     replies: list[Reply] = []
     feedback = ""
-    for _ in range(MAX_ATTEMPTS):
-        prompt = build_prompt(request, paths, settings.root, all_files, feedback)
-        reply = llm.complete(
-            model=settings.editor_model,
-            system=EDITOR_SYSTEM,
-            prompt=prompt,
-            max_tokens=settings.max_output_tokens,
-        )
-        reply.role = "editor"
-        replies.append(reply)
-
-        needed = [p for p in parse_need_files(reply.text) if p in all_files and p not in paths]
-        if needed:
-            paths += needed
-            feedback = ""
-            continue
-        edits = parse_edits(reply.text)
-        if not edits:
-            feedback = "Your reply had no valid edit blocks. Reply only with edit blocks."
-            continue
-        try:
-            return Proposal(plan_changes(settings.root, edits), replies, paths)
-        except EditError as exc:
-            feedback = (
-                f"Your previous edit could not be applied: {exc}. "
-                "Copy the SEARCH lines exactly from the files above."
+    for model in models:
+        attempts = 0
+        while attempts < ATTEMPTS_PER_MODEL:
+            prompt = build_prompt(request, paths, settings.root, all_files, feedback)
+            reply = llm.complete(
+                model=model,
+                system=EDITOR_SYSTEM,
+                prompt=prompt,
+                max_tokens=settings.max_output_tokens,
             )
-    return Proposal([], replies, paths, error=f"no applicable edit after {MAX_ATTEMPTS} attempts")
+            reply.role = "editor"
+            replies.append(reply)
+
+            needed = [p for p in parse_need_files(reply.text) if p in all_files and p not in paths]
+            if needed:
+                paths += needed
+                feedback = ""
+                continue
+            attempts += 1
+            edits = parse_edits(reply.text)
+            if not edits:
+                feedback = "Your reply had no valid edit blocks. Reply only with edit blocks."
+                continue
+            try:
+                return Proposal(plan_changes(settings.root, edits), replies, paths, model=model)
+            except EditError as exc:
+                feedback = (
+                    f"Your previous edit could not be applied: {exc}. "
+                    "Copy the SEARCH lines exactly from the files above."
+                )
+    tried = " → ".join(dict.fromkeys(models))
+    return Proposal([], replies, paths, error=f"no applicable edit from {tried}")
 
 
 def apply_changes(settings: Settings, changes: list[Change]) -> None:

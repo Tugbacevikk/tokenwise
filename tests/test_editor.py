@@ -107,8 +107,22 @@ def test_propose_fetches_needed_files(settings, fake):
 
 def test_propose_retries_with_feedback_then_gives_up(settings, fake):
     bad = "app/auth.py\n<<<<<<< SEARCH\nmissing\n=======\nx\n>>>>>>> REPLACE\n"
-    llm = fake(bad, "no blocks here", bad)
-    proposal = propose("x", ["app/auth.py"], settings, llm, ALL_FILES)
-    assert proposal.changes == [] and "3 attempts" in proposal.error
+    llm = fake(bad, "no blocks here")
+    proposal = propose("x", ["app/auth.py"], settings, llm, ALL_FILES, models=["m1"])
+    assert proposal.changes == [] and proposal.error == "no applicable edit from m1"
     assert "could not be applied" in llm.calls[1]["prompt"]
-    assert "no valid edit blocks" in llm.calls[2]["prompt"]
+    assert len(llm.calls) == 2
+
+
+def test_propose_climbs_the_ladder_on_failure(settings, fake):
+    bad = "app/auth.py\n<<<<<<< SEARCH\nmissing\n=======\nx\n>>>>>>> REPLACE\n"
+    llm = fake(bad, bad, LENGTH_CHECK)
+    proposal = propose("x", ["app/auth.py"], settings, llm, ALL_FILES, models=["cheap", "strong"])
+    assert proposal.model == "strong" and len(proposal.changes) == 1
+    assert [c["model"] for c in llm.calls] == ["cheap", "cheap", "strong"]
+
+
+def test_propose_uses_settings_ladder_by_default(settings, fake):
+    llm = fake(LENGTH_CHECK)
+    proposal = propose("x", ["app/auth.py"], settings, llm, ALL_FILES)
+    assert proposal.model == settings.models[0] == llm.calls[0]["model"]
