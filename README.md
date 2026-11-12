@@ -18,7 +18,13 @@ Claude API'de sabit kısımlar (talimat + harita) *prompt caching* ile işaretle
 
 ## Kurulum
 
-Python 3.11 veya üzeri gerekir.
+Python 3.11 veya üzeri gerekir. PyPI'de paket adı `tokenwise-coder`, komut adı `tokenwise`:
+
+```powershell
+pipx install tokenwise-coder     # ya da: pip install tokenwise-coder
+```
+
+Kaynaktan (geliştirme için):
 
 ```powershell
 git clone https://github.com/Tugbacevikk/tokenwise
@@ -162,7 +168,7 @@ Modellerin yazdığı klasik *unified diff*'te satır numaraları sık sık kaya
 
 ```
 tokenwise/
-├── cli.py        # komutlar: init, map, ask, undo, cache
+├── cli.py        # komutlar: init, map, ask, apply, undo, report, benchmark, cache
 ├── config.py     # ayarlar: varsayılanlar → tokenwise.toml → ortam değişkenleri
 ├── repo_map.py   # proje haritası (Python: ast, JS/TS: düzenli ifadeler)
 ├── selector.py   # ucuz modelle dosya seçimi
@@ -185,7 +191,29 @@ ruff check . && ruff format --check .
 pytest --cov=tokenwise
 ```
 
-Testler sahte bir modelle çalışır, API'ye para harcamaz. Her push'ta GitHub Actions aynı kontrolleri çalıştırır.
+Testler sahte bir modelle çalışır, API'ye para harcamaz. Her push'ta GitHub Actions aynı kontrolleri çalıştırır ve VS Code eklentisini derleyip paketler.
+
+## Yayınlama
+
+Yayın, etiket (tag) gönderince GitHub Actions tarafından otomatik yapılır. Bir kerelik hazırlık:
+
+1. **PyPI:** pypi.org'da hesap aç → *Your projects → Publishing → Add a new pending publisher*: proje adı `tokenwise-coder`, sahip `Tugbacevikk`, repo `tokenwise`, iş akışı `release.yml`, ortam `pypi`. Böylece GitHub'a hiçbir şifre koymadan yayın yapılır (*trusted publishing*).
+2. **GitHub:** repo *Settings → Environments* altında `pypi` adında bir ortam oluştur.
+3. **VS Code Marketplace:** marketplace.visualstudio.com/manage adresinde `tugbacevik` adlı yayıncı (publisher) oluştur; Azure DevOps'tan *Marketplace → Manage* yetkili bir kişisel erişim anahtarı (PAT) al ve repo *Settings → Secrets → Actions* altına `VSCE_PAT` adıyla ekle. Yayıncı adı farklı olursa `vscode-extension/package.json` içindeki `publisher` alanını değiştir.
+
+Her yayında:
+
+```powershell
+# 1. pyproject.toml ve tokenwise/__init__.py'deki sürümü, CHANGELOG.md'yi güncelle, commit et
+git tag v1.0.0 && git push origin v1.0.0                  # → PyPI + GitHub Release
+git tag vscode-v1.0.0 && git push origin vscode-v1.0.0    # → VS Code Marketplace
+```
+
+İş akışı, etiketin paketteki sürümle aynı olduğunu kontrol eder; farklıysa yayınlamaz.
+
+## Katkı
+
+Hata ve öneriler için [Issues](https://github.com/Tugbacevikk/tokenwise/issues) bölümündeki şablonları kullan. Kod katkısında: önce `ruff` ve `pytest` temiz geçsin, değişiklik `CHANGELOG.md`'ye yazılsın.
 
 ## Yol haritası
 
@@ -195,7 +223,8 @@ Testler sahte bir modelle çalışır, API'ye para harcamaz. Her push'ta GitHub 
 - [x] Aşama 4: karşılaştırma testi altyapısı ve örnek görevler (`tokenwise benchmark`)
 - [ ] Kendi projelerinden 20 görevle ölçüm ve sonuç tablosu
 - [x] Aşama 5: VS Code eklentisi (fark görünümü, uygula/geri al, maliyet paneli)
-- [ ] Aşama 6: PyPI ve Marketplace yayını
+- [x] Aşama 6: yayın altyapısı (PyPI ve Marketplace iş akışları, CHANGELOG, issue şablonları)
+- [ ] İlk yayın: v1.0.0 etiketi
 
 ## Lisans
 

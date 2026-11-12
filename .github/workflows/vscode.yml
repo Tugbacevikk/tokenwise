@@ -1,0 +1,33 @@
+name: VS Code extension
+
+# Push a tag like vscode-v1.0.0 to publish the extension to the Marketplace.
+# Needs a VSCE_PAT secret (Azure DevOps personal access token with Marketplace > Manage).
+on:
+  push:
+    tags: ["vscode-v*"]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: vscode-extension
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - name: Tag must match the extension version
+        run: |
+          version=$(node -p "require('./package.json').version")
+          test "vscode-v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME != vscode-v$version"; exit 1; }
+      - run: npx vsce package --no-dependencies
+      - run: npx vsce publish --no-dependencies --packagePath *.vsix
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+      - run: gh release create "$GITHUB_REF_NAME" *.vsix --title "VS Code extension ${GITHUB_REF_NAME#vscode-v}" --notes "See CHANGELOG.md"
+        env:
+          GH_TOKEN: ${{ github.token }}
