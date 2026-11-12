@@ -18,7 +18,7 @@ Claude API'de sabit kısımlar (talimat + harita) *prompt caching* ile işaretle
 
 ## Kurulum
 
-Python 3.11 veya üzeri gerekir. PyPI'de paket adı `tokenwise-coder`, komut adı `tokenwise`:
+Python 3.11 veya üzeri gerekir. Haritada Python, JavaScript/TypeScript, Java, Kotlin, C#, Go, Rust ve PHP desteklenir. PyPI'de paket adı `tokenwise-coder`, komut adı `tokenwise`:
 
 ```powershell
 pipx install tokenwise-coder     # ya da: pip install tokenwise-coder
@@ -49,6 +49,7 @@ tokenwise ask "..." -m claude-opus-5-5   # tek bir modeli zorla, merdiven yok
 tokenwise ask "..." --no-cache # önbelleğe bakma
 tokenwise ask "..." --check "pytest -q"   # önce testler geçsin (ayardaki check'i ezer)
 tokenwise ask "..." --no-check # ayarlı check'i bu sefer atla
+tokenwise ask "..." --over-budget         # haftalık bütçe dolsa da çalıştır
 tokenwise undo                 # son uygulanan değişikliği geri al
 tokenwise cache                # önbellekte kaç cevap var; --clear ile temizle
 tokenwise report               # son 7 gün ve tüm zaman: istek, token, maliyet, model dağılımı
@@ -109,6 +110,15 @@ check = "{python} -m pytest -q -x"     # {python} = tokenwise'ı çalıştıran 
 ```
 
 Kontrol geçmezse komutun çıktısı (son 3000 karakter) modele geri gönderilir ve düzeltmesi istenir; o model iki denemede beceremezse merdivende bir üst modele geçilir. Hiçbiri geçemezse son değişiklik ve hata çıktısı gösterilir, dosyaya yazılmaz; yine de istersen `tokenwise apply` ile uygulayabilirsin. Asıl proje kontrol sırasında hiç değişmez.
+
+### Haftalık bütçe
+
+```toml
+[tokenwise]
+budget_usd_week = 2.0
+```
+
+Son 7 günün harcaması bu tutara ulaşınca `tokenwise ask` modeli hiç çağırmadan durur (`--over-budget` ile aşılabilir). Her istekten sonra harcanan/limit gösterilir, %80'i geçince sarıya döner; `tokenwise report` ve VS Code paneli de bütçe durumunu gösterir.
 
 ### Önbellek
 

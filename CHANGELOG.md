@@ -7,6 +7,9 @@ a change that breaks existing use bumps major.
 
 First release.
 
+- `budget_usd_week`: refuse new requests once the last 7 days cost that much
+  (`--over-budget` to override); shown after each request, in the report and in VS Code.
+- Map support for Java, Kotlin, C#, Go, Rust and PHP, and JS/TS class methods.
 - Large files are sent focused: header, the functions the selector named
   (`path::name`), and a list of the rest; `NEED_FILES` gets the whole file.
 - `check` setting / `--check`: a change must pass a command (usually the tests) in a

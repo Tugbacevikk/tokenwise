@@ -69,7 +69,21 @@ class ReportProvider implements vscode.TreeDataProvider<ReportItem> {
     const days = vscode.workspace.getConfiguration("tokenwise").get<number>("reportDays", 7);
     const r = this.report.recent;
     const all = this.report.all_time;
+    const budget = this.report.budget;
+    const budgetItems = budget?.usd_week
+      ? [
+          new ReportItem(
+            "Weekly budget",
+            `${formatUsd(budget.spent_7d_usd)} of ${formatUsd(budget.usd_week)} (${Math.round(
+              (100 * budget.spent_7d_usd) / budget.usd_week,
+            )}%)`,
+            [],
+            budget.spent_7d_usd >= budget.usd_week ? "warning" : "pie-chart",
+          ),
+        ]
+      : [];
     return [
+      ...budgetItems,
       new ReportItem(`Cost, last ${days} days`, formatUsd(r.cost_usd), [], "credit-card"),
       new ReportItem("Cost, all time", formatUsd(all.cost_usd), [], "credit-card"),
       new ReportItem("Average per request", formatUsd(all.avg_cost_per_run), [], "graph"),

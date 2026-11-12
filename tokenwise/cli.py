@@ -175,9 +175,21 @@ def ask(
         "", "--check", help='Command that must pass first, e.g. "pytest -q". Overrides the config.'
     ),
     no_check: bool = typer.Option(False, "--no-check", help="Skip the configured check."),
+    over_budget: bool = typer.Option(
+        False, "--over-budget", help="Run even if the weekly budget is used up."
+    ),
 ) -> None:
     """Make a code change with the least context and the fewest lines."""
     settings = load_settings(root)
+    ledger = Ledger(ledger_path(settings))
+    spent = ledger.summary(7)["cost_usd"]
+    budget = settings.budget_usd_week
+    if budget and spent >= budget and not over_budget:
+        _fail(
+            f"Weekly budget used up: {format_usd(spent)} of {format_usd(budget)} "
+            "in the last 7 days. Raise budget_usd_week in tokenwise.toml or pass --over-budget.",
+            as_json,
+        )
     if no_cache:
         settings.cache = False
     if check:
@@ -198,15 +210,19 @@ def ask(
         with console.status("Choosing files and writing the change..."):
             result = run(request, settings, llm, model)
 
-    ledger = Ledger(ledger_path(settings))
     run_id = ledger.record(result)
+    budget_note = ""
+    if budget:
+        spent += result.cost
+        budget_note = f"{format_usd(spent)} of {format_usd(budget)} weekly budget used"
 
     if as_json:
         if result.ok:
             _save_pending(settings, run_id, result)
         if result.changes and result.check_passed is False:
             _save_pending(settings, run_id, result)  # the user may still choose to apply it
-        print(json.dumps({"run_id": run_id, **result.to_dict()}))
+        budget_info = {"budget_usd_week": budget, "spent_7d_usd": round(spent, 6)}
+        print(json.dumps({"run_id": run_id, **result.to_dict(), **budget_info}))
         raise typer.Exit(0 if result.ok else 1)
 
     if result.files:
@@ -239,6 +255,9 @@ def ask(
         f"{len(result.changes)} file(s) · [green]+{added}[/] [red]-{removed}[/] lines · "
         f"by {result.model}"
     )
+    if budget_note:
+        color = "yellow" if spent >= 0.8 * budget else "dim"
+        console.print(f"[{color}]{budget_note}[/]")
 
     if dry_run:
         _save_pending(settings, run_id, result)
@@ -328,6 +347,8 @@ def report(
     settings = load_settings(root)
     ledger = Ledger(ledger_path(settings))
     recent, total = ledger.summary(days), ledger.summary(None)
+    week = recent if days == 7 else ledger.summary(7)
+    budget = {"usd_week": settings.budget_usd_week, "spent_7d_usd": week["cost_usd"]}
 
     if csv_path:
         rows = ledger.rows()
@@ -337,13 +358,20 @@ def report(
             writer.writerows(rows)
 
     if as_json:
-        print(json.dumps({"recent": recent, "all_time": total}))
+        print(json.dumps({"recent": recent, "all_time": total, "budget": budget}))
         return
     if not total["runs"]:
         console.print('No requests recorded yet. Try: tokenwise ask "..."')
         return
 
     console.print(_summary_table([(f"last {days} days", recent), ("all time", total)]))
+    if settings.budget_usd_week:
+        share = week["cost_usd"] / settings.budget_usd_week
+        color = "red" if share >= 1 else "yellow" if share >= 0.8 else "green"
+        console.print(
+            f"Weekly budget: [{color}]{format_usd(week['cost_usd'])} of "
+            f"{format_usd(settings.budget_usd_week)} ({100 * share:.0f}%)[/]"
+        )
     models = Table(title="By model (all time)", show_edge=False)
     for column in ("model", "calls", "cached", "input", "output", "cost"):
         models.add_column(column, justify="left" if column == "model" else "right")

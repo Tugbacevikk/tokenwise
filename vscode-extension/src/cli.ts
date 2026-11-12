@@ -46,6 +46,7 @@ export interface Summary {
 export interface Report {
   recent: Summary;
   all_time: Summary;
+  budget?: { usd_week: number; spent_7d_usd: number };
 }
 
 export class CliError extends Error {}

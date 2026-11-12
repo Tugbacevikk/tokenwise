@@ -52,6 +52,8 @@ extensions = [".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".kt", ".cs", ".go",
 max_files = 8
 # Files longer than this may be sent focused: only the functions the request needs
 focus_lines = 300
+# Stop asking once the last 7 days cost this much (USD). 0 = no limit.
+budget_usd_week = 0
 # Command that must pass before a change is offered, run in a throwaway copy of the project.
 # A failing check is sent back to the model to fix. {{python}} = the Python running tokenwise.
 # check = "{{python}} -m pytest -q -x"
@@ -87,6 +89,7 @@ class Settings:
     max_file_bytes: int = 200_000
     max_files: int = 8
     focus_lines: int = 300
+    budget_usd_week: float = 0.0
     max_output_tokens: int = 4096
     cache: bool = True
     check: str = ""
