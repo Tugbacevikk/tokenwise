@@ -12,7 +12,19 @@ from dotenv import load_dotenv
 CONFIG_FILE = "tokenwise.toml"
 STATE_DIR = ".tokenwise"
 
-DEFAULT_EXTENSIONS = (".py", ".js", ".jsx", ".ts", ".tsx")
+DEFAULT_EXTENSIONS = (
+    ".py",
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".java",
+    ".kt",
+    ".cs",
+    ".go",
+    ".rs",
+    ".php",
+)
 DEFAULT_IGNORE_DIRS = (
     ".git",
     ".tokenwise",
@@ -35,7 +47,7 @@ provider = "{provider}"
 # at the rung the router picks and climbs on failure. One entry = no climbing.
 models = {models}
 # File types included in the project map
-extensions = [".py", ".js", ".jsx", ".ts", ".tsx"]
+extensions = [".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".kt", ".cs", ".go", ".rs", ".php"]
 # Most files sent to the editor in one request
 max_files = 8
 # Files longer than this may be sent focused: only the functions the request needs

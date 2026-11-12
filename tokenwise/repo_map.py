@@ -93,21 +93,102 @@ _JS_PATTERNS = [
         "const {0} = ({1}) =>",
     ),
     (re.compile(_PREFIX + r"(interface|type)[ \t]+(\w+)", re.M), "{0} {1}"),
+    # class methods: indented `name(args) {` with optional modifiers and return type
+    (
+        re.compile(
+            r"^[ \t]+(?:(?:public|private|protected|static|async|readonly|override|get|set)[ \t]+)*"
+            r"(?!(?:if|for|while|switch|catch|return|function|constructor)\b)(\w+)[ \t]*"
+            r"\(([^)]*)\)(?:[ \t]*:[^{;=\n]+)?[ \t]*\{",
+            re.M,
+        ),
+        "  {0}({1})",
+    ),
 ]
+
+_MOD = (
+    r"(?:(?:public|private|protected|internal|static|final|abstract|sealed|partial|open|data"
+    r"|override|virtual|async|synchronized|suspend|inline|readonly)[ \t]+)"
+)
+_TYPE_DECL = (
+    re.compile(rf"^[ \t]*{_MOD}*(class|interface|enum|record|struct|object)[ \t]+(\w+)", re.M),
+    "{0} {1}",
+)
+_LANG_PATTERNS = {
+    # Java and C#: a method needs at least one modifier, which keeps out calls and statements
+    (".java", ".cs"): [
+        _TYPE_DECL,
+        (
+            re.compile(rf"^[ \t]+{_MOD}+[\w<>\[\],.? ]+?[ \t]+(\w+)[ \t]*\(([^)]*)\)", re.M),
+            "  {0}({1})",
+        ),
+    ],
+    (".kt", ".kts"): [
+        _TYPE_DECL,
+        (
+            re.compile(
+                rf"^[ \t]*{_MOD}*fun[ \t]+(?:<[^>]*>[ \t]*)?(?:[\w.<>?, ]+\.)?"
+                r"(\w+)[ \t]*\(([^)]*)\)",
+                re.M,
+            ),
+            "fun {0}({1})",
+        ),
+    ],
+    (".go",): [
+        (
+            re.compile(r"^func[ \t]+(?:\(([^)]*)\)[ \t]*)?(\w+)[ \t]*\(([^)]*)\)", re.M),
+            "func ({0}) {1}({2})",
+        ),
+        (re.compile(r"^type[ \t]+(\w+)[ \t]+(struct|interface)", re.M), "type {0} {1}"),
+    ],
+    (".rs",): [
+        (
+            re.compile(
+                r"^[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?(?:async[ \t]+)?(?:unsafe[ \t]+)?"
+                r"fn[ \t]+(\w+)[ \t]*(?:<[^>]*>)?\(([^)]*)\)",
+                re.M,
+            ),
+            "fn {0}({1})",
+        ),
+        (
+            re.compile(r"^[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?(struct|enum|trait)[ \t]+(\w+)", re.M),
+            "{0} {1}",
+        ),
+        (re.compile(r"^[ \t]*impl(?:<[^>]*>)?[ \t]+([^{\n]+?)[ \t]*\{", re.M), "impl {0}"),
+    ],
+    (".php",): [
+        _TYPE_DECL,
+        (
+            re.compile(
+                r"^[ \t]*(?:(?:public|private|protected|static|abstract|final)[ \t]+)*"
+                r"function[ \t]+(\w+)[ \t]*\(([^)]*)\)",
+                re.M,
+            ),
+            "function {0}({1})",
+        ),
+    ],
+}
+
+
+def _outline_with(patterns: list, source: str) -> list[str]:
+    found = {}
+    for pattern, template in patterns:
+        for match in pattern.finditer(source):
+            groups = [" ".join((g or "").split()) for g in match.groups()]
+            text = template.format(*groups).replace("func () ", "func ")
+            found.setdefault(match.start(), text)
+    return [text for _, text in sorted(found.items())]
 
 
 def outline_js(source: str) -> list[str]:
-    found = []
-    for pattern, template in _JS_PATTERNS:
-        for match in pattern.finditer(source):
-            groups = [" ".join(g.split()) for g in match.groups()]
-            found.append((match.start(), template.format(*groups)))
-    return [text for _, text in sorted(found)]
+    return _outline_with(_JS_PATTERNS, source)
 
 
 def outline(path: str, source: str) -> list[str]:
     if path.endswith(".py"):
         return outline_python(source)
+    for extensions, patterns in _LANG_PATTERNS.items():
+        if path.endswith(extensions):
+            return _outline_with(patterns, source)
     return outline_js(source)
 
 
