@@ -22,6 +22,7 @@ from .llm import LLM, CachedLLM, ConfigError, cache_path
 from .pipeline import Result, run
 from .pricing import format_usd, reply_cost
 from .repo_map import build_map, estimate_tokens, list_source_files, source_tokens
+from .textio import read_source
 
 app = typer.Typer(
     help="tokenwise: get AI-written code with the fewest tokens and the fewest lines.",
@@ -244,7 +245,7 @@ def apply(
             path = resolve(settings.root, change.path)
         except EditError as exc:
             _fail(str(exc), as_json)
-        current = path.read_text("utf-8") if path.exists() else None
+        current = read_source(path, strict=False) if path.exists() else None
         if current != change.old:
             _fail(f"{change.path} changed since the proposal; ask again.", as_json)
     _apply(settings, Ledger(ledger_path(settings)), data["run_id"], changes)

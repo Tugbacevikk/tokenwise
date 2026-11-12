@@ -26,6 +26,7 @@ from .llm import LLM
 from .pipeline import Result, run
 from .prompts import BASELINE_SYSTEM
 from .repo_map import list_source_files
+from .textio import read_source
 
 METHODS = ("baseline", "tokenwise")
 CHECK_TIMEOUT = 300
@@ -86,7 +87,7 @@ def baseline(request: str, settings: Settings, llm: LLM, model: str) -> Result:
     result.files = files
     parts = [f"Request: {request}", "", "Project files:"]
     for rel in files:
-        parts.append(f"{rel}\n```\n{(settings.root / rel).read_text('utf-8', 'replace')}\n```")
+        parts.append(f"{rel}\n```\n{read_source(settings.root / rel, strict=False)}\n```")
     reply = llm.complete(
         model=model,
         system=BASELINE_SYSTEM,
@@ -100,7 +101,7 @@ def baseline(request: str, settings: Settings, llm: LLM, model: str) -> Result:
     try:
         for rel, body in parse_files(reply.text):
             path = resolve(settings.root, rel)
-            old = path.read_text("utf-8") if path.exists() else None
+            old = read_source(path, strict=False) if path.exists() else None
             if body != old:
                 result.changes.append(Change(rel, old, body))
     except EditError as exc:

@@ -12,6 +12,7 @@ from .config import Settings
 from .llm import LLM, Reply
 from .prompts import EDITOR_SYSTEM
 from .selector import is_safe_path, normalize_path
+from .textio import NotTextError, Style, read_source, read_style, write_source
 
 ATTEMPTS_PER_MODEL = 2
 MAX_LISTED_FILES = 200
@@ -112,7 +113,10 @@ def plan_changes(root: Path, edits: list[Edit]) -> list[Change]:
     for edit in edits:
         if edit.path not in working:
             path = resolve(root, edit.path)
-            originals[edit.path] = path.read_text("utf-8") if path.exists() else None
+            try:
+                originals[edit.path] = read_source(path) if path.exists() else None
+            except NotTextError as exc:
+                raise EditError(str(exc)) from None
             working[edit.path] = originals[edit.path] or ""
         text = working[edit.path]
 
@@ -142,7 +146,7 @@ def build_prompt(
     for rel in paths:
         path = root / rel
         if path.is_file():
-            parts.append(f"{rel}\n```\n{path.read_text('utf-8', errors='replace')}\n```")
+            parts.append(f"{rel}\n```\n{read_source(path, strict=False)}\n```")
         else:
             parts.append(f"{rel}\n(does not exist yet)")
     others = [f for f in all_files if f not in paths][:MAX_LISTED_FILES]
@@ -205,25 +209,34 @@ def propose(
 
 
 def apply_changes(settings: Settings, changes: list[Change]) -> None:
-    undo = {c.path: c.old for c in changes}
+    """Writes the changes, keeping each file's line endings and BOM; remembers how to undo."""
+    paths = {c.path: resolve(settings.root, c.path) for c in changes}
+    styles = {c.path: read_style(paths[c.path]) for c in changes if c.old is not None}
+    # A new file follows the files changed with it (else LF), so a CRLF project stays CRLF.
+    new_style = next(iter(styles.values()), Style())
+    undo = {
+        c.path: None if c.old is None else {"text": c.old, **styles[c.path].to_dict()}
+        for c in changes
+    }
     settings.state_dir.mkdir(exist_ok=True)
     (settings.state_dir / UNDO_FILE).write_text(json.dumps(undo, ensure_ascii=False), "utf-8")
     for change in changes:
-        path = resolve(settings.root, change.path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(change.new, "utf-8")
+        write_source(paths[change.path], change.new, styles.get(change.path, new_style))
 
 
 def undo_last(settings: Settings) -> list[str]:
     undo_path = settings.state_dir / UNDO_FILE
     if not undo_path.exists():
         return []
-    undo: dict[str, str | None] = json.loads(undo_path.read_text("utf-8"))
+    undo: dict[str, dict | str | None] = json.loads(undo_path.read_text("utf-8"))
     for rel, old in undo.items():
         path = resolve(settings.root, rel)
         if old is None:
             path.unlink(missing_ok=True)
+        elif isinstance(old, str):  # written by tokenwise 1.0.0
+            write_source(path, old, Style())
         else:
-            path.write_text(old, "utf-8")
+            style = Style(newline=old["newline"], bom=old["bom"])
+            write_source(path, old["text"], style)
     undo_path.unlink()
     return list(undo)
