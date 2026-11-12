@@ -1,0 +1,38 @@
+# Benchmark tasks. Run with:  tokenwise benchmark
+#
+# project  folder of the code, relative to this file (it is copied; the original never changes)
+# request  what you would type after `tokenwise ask`
+# check    command that must succeed after the change; runs inside the copy.
+#          {python} = the Python running tokenwise, {checks} = the benchmark/checks folder.
+#
+# Replace these examples with ~20 real tasks from your own projects for meaningful numbers.
+
+[[task]]
+name = "typo"
+project = "projects/shop"
+request = "Fix the typo in the error message Cart.add raises for a non-positive quantity."
+check = "{python} -m pytest -q -p no:cacheprovider {checks}/test_typo.py"
+
+[[task]]
+name = "discount"
+project = "projects/shop"
+request = "Add Cart.apply_discount(percent) that lowers total() by that percent; reject values outside 0-100 with ValueError."
+check = "{python} -m pytest -q -p no:cacheprovider {checks}/test_discount.py"
+
+[[task]]
+name = "remove-missing"
+project = "projects/shop"
+request = "Cart.remove should raise KeyError('not in cart: <sku>') when the item is not in the cart."
+check = "{python} -m pytest -q -p no:cacheprovider {checks}/test_remove_missing.py"
+
+[[task]]
+name = "format-price"
+project = "projects/shop"
+request = "Add money.py with format_price(cents) returning e.g. '1,234.56 TL'."
+check = "{python} -m pytest -q -p no:cacheprovider {checks}/test_format_price.py"
+
+[[task]]
+name = "restock-validation"
+project = "projects/shop"
+request = "Catalog.restock must raise ValueError when amount is zero or negative."
+check = "{python} -m pytest -q -p no:cacheprovider {checks}/test_restock.py"

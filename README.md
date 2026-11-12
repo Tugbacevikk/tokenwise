@@ -92,6 +92,40 @@ Her istek ve her model çağrısı `.tokenwise/ledger.db` içine yazılır: toke
 "gpt-4o-mini" = [0.15, 0.15, 0.075, 0.60]   # input, cache write, cache read, output ($ / 1M token)
 ```
 
+## Karşılaştırma testi (benchmark)
+
+`tokenwise benchmark` her görevi iki yöntemle çalıştırır ve sonuçları karşılaştırır:
+
+| Yöntem | Ne gönderir | Ne ister |
+| --- | --- | --- |
+| `baseline` | projedeki **tüm** kaynak dosyaları, orta basamaktaki modele | değişen dosyaların **tamamını** |
+| `tokenwise` | harita → seçilen dosyalar → yönlendirilen model | sadece değişen satırları |
+
+Her çalıştırma projenin geçici bir kopyasında yapılır, değişiklik oraya uygulanır ve görevin `check` komutu (genelde testler) değişikliğin gerçekten çalışıp çalışmadığına karar verir. Asıl proje hiç değişmez, önbellek kapalıdır.
+
+```powershell
+tokenwise benchmark                          # benchmark/tasks.toml → benchmark/results.md
+tokenwise benchmark --only discount          # tek görev
+tokenwise benchmark --methods tokenwise      # sadece bir yöntem
+tokenwise benchmark -m qwen2.5-coder:7b      # iki yöntem için de aynı model
+```
+
+`benchmark/` klasöründe örnek bir proje (`projects/shop`) ve 5 görev var; her görevin kontrolü değişiklikten önce başarısız olur. Anlamlı sonuç için bunları kendi projelerinden ~20 gerçek görevle değiştir. Görev biçimi:
+
+```toml
+[[task]]
+name = "discount"
+project = "projects/shop"                         # tasks.toml'a göre göreli yol
+request = "Add Cart.apply_discount(percent) ..."  # tokenwise ask'e yazacağın istek
+check = "{python} -m pytest -q {checks}/test_discount.py"   # değişiklikten sonra başarılı olmalı
+```
+
+Model ayarları `benchmark/` klasöründeki `tokenwise.toml`'dan okunur (yoksa varsayılanlar); yerel modelle denemek için orada `tokenwise init --local` çalıştır. Sonuçlar `benchmark/results.md`'ye tablo olarak yazılır ve her çalıştırma `benchmark/.tokenwise/ledger.db`'ye yöntem adıyla kaydedilir.
+
+### Sonuçlar
+
+*Henüz ölçülmedi.* `tokenwise benchmark` çalıştırıldıktan sonra `benchmark/results.md`'deki özet tablo buraya konacak.
+
 ## Neden "edit blokları"?
 
 Düzenleyici model değişiklikleri şu biçimde döndürür:
@@ -122,6 +156,7 @@ tokenwise/
 ├── pipeline.py   # bir isteğin baştan sona akışı (CLI, JSON ve benchmark ortak kullanır)
 ├── ledger.py     # maliyet kaydı (.tokenwise/ledger.db) ve özetler
 ├── pricing.py    # model fiyatları ve token → dolar hesabı
+├── benchmark.py  # baseline ile tokenwise karşılaştırması, geçici kopyada kontrol
 ├── llm.py        # Anthropic ve OpenAI uyumlu arka uçlar, SQLite önbellek
 └── prompts.py    # modellere giden tüm talimatlar
 ```
@@ -140,7 +175,8 @@ Testler sahte bir modelle çalışır, API'ye para harcamaz. Her push'ta GitHub 
 - [x] Aşama 0–1: iskelet, proje haritası, dosya seçici, edit blokları, uygulama/geri alma
 - [x] Aşama 2: zorluğa göre model seçimi ve yükseltme, istek önbelleği, yerel model desteği (Ollama)
 - [x] Aşama 3: maliyet kaydı (SQLite), `tokenwise report`, `--json` ve `apply`
-- [ ] Aşama 4: 20 görevlik karşılaştırma testi, sonuç tablosu
+- [x] Aşama 4: karşılaştırma testi altyapısı ve örnek görevler (`tokenwise benchmark`)
+- [ ] Kendi projelerinden 20 görevle ölçüm ve sonuç tablosu
 - [ ] Aşama 5: VS Code eklentisi
 - [ ] Aşama 6: PyPI ve Marketplace yayını
 

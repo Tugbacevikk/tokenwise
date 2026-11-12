@@ -338,6 +338,73 @@ def report(
 
 
 @app.command()
+def benchmark(
+    tasks_file: Path = typer.Argument(
+        Path("benchmark/tasks.toml"), help="TOML file with [[task]] entries."
+    ),
+    methods: str = typer.Option(
+        "baseline,tokenwise", "--methods", help="Comma-separated: baseline, tokenwise."
+    ),
+    out: Path = typer.Option(
+        Path("benchmark/results.md"), "--out", "-o", help="Markdown file for the results."
+    ),
+    model: str = typer.Option("", "--model", "-m", help="Force one model for both methods."),
+    only: str = typer.Option("", "--only", help="Run only tasks whose name contains this."),
+) -> None:
+    """Run every task twice, the usual way and the tokenwise way, and compare cost and results."""
+    from .benchmark import METHODS, load_tasks, markdown, run_task, totals
+
+    chosen = [m.strip() for m in methods.split(",") if m.strip()]
+    if not chosen or any(m not in METHODS for m in chosen):
+        _fail(f"--methods must be a comma-separated list of: {', '.join(METHODS)}")
+    try:
+        tasks = load_tasks(tasks_file)
+    except (OSError, ValueError) as exc:
+        _fail(str(exc))
+    tasks = [t for t in tasks if only in t.name]
+
+    settings = load_settings(tasks_file.parent)
+    settings.cache = False
+    try:
+        llm = make_llm(settings)
+    except ConfigError as exc:
+        _fail(str(exc))
+    ledger = Ledger(ledger_path(settings))
+    checks_dir = (tasks_file.parent / "checks").resolve()
+
+    outcomes = []
+    for task in tasks:
+        for method in chosen:
+            with console.status(f"{task.name} · {method}..."):
+                outcome = run_task(task, method, settings, llm, checks_dir, model)
+            ledger.record(outcome.result, method=method)
+            mark = {None: "", True: " [green]check passed[/]", False: " [red]check failed[/]"}
+            status = "ok" if outcome.result.ok else f"[red]{outcome.result.error}[/]"
+            console.print(
+                f"{task.name} · {method}: {status} · {format_usd(outcome.result.cost)}"
+                f"{mark[outcome.passed]}"
+            )
+            outcomes.append(outcome)
+
+    report_md = markdown(outcomes)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(report_md, "utf-8")
+    console.print()
+    table = Table(title="Benchmark", show_edge=False)
+    table.add_column("")
+    for method in chosen:
+        table.add_column(method, justify="right")
+    stats = [totals(outcomes, m) for m in chosen]
+    table.add_row("cost", *(format_usd(s["cost"]) for s in stats))
+    table.add_row("input tokens", *(f"{s['input']:,}" for s in stats))
+    table.add_row("output tokens", *(f"{s['output']:,}" for s in stats))
+    table.add_row("lines changed", *(f"{s['lines']:,}" for s in stats))
+    table.add_row("checks passed", *(f"{s['passed']}/{s['checked']}" for s in stats))
+    console.print(table)
+    console.print(f"Wrote {out}")
+
+
+@app.command()
 def cache(
     root: Path = RootOption,
     clear: bool = typer.Option(False, "--clear", help="Delete every stored reply."),

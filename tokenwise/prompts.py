@@ -32,3 +32,13 @@ the new lines
 To create a new file, leave the SEARCH part empty.
 If you must see another project file before editing, reply with only this line:
 NEED_FILES: path/one.py, path/two.py"""
+
+
+# The usual way people use a model for code, kept as the benchmark's point of comparison:
+# the whole project goes in, whole files come out.
+BASELINE_SYSTEM = """You are a senior engineer. Make the change the user asks for.
+
+Reply with the complete new content of every file you change or create, each as:
+=== FILE: path/to/file.py ===
+<the whole file>
+=== END FILE ==="""

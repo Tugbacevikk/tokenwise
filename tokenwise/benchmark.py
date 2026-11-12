@@ -1,0 +1,208 @@
+"""Compares tokenwise with the usual approach on real tasks, in throwaway copies of the project.
+
+baseline   every source file goes to one model, which returns whole changed files
+tokenwise  map → chosen files → routed model → edit blocks (the normal pipeline)
+
+Each run happens in a fresh temporary copy, the change is applied there and the task's check
+command (for example its tests) decides whether the change works. The original never changes.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import tomllib
+from dataclasses import dataclass, replace
+from pathlib import Path
+
+from .config import Settings
+from .editor import Change, EditError, apply_changes, resolve
+from .llm import LLM
+from .pipeline import Result, run
+from .prompts import BASELINE_SYSTEM
+from .repo_map import list_source_files
+
+METHODS = ("baseline", "tokenwise")
+CHECK_TIMEOUT = 300
+_COPY_IGNORE = shutil.ignore_patterns(
+    ".git", ".tokenwise", "node_modules", ".venv", "venv", "__pycache__"
+)
+_FILE_BLOCK = re.compile(
+    r"^=== FILE: (?P<path>.+?) ===\n(?P<body>.*?)^=== END FILE ===", re.S | re.M
+)
+
+
+@dataclass
+class Task:
+    name: str
+    project: Path
+    request: str
+    check: str = ""
+
+
+@dataclass
+class Outcome:
+    task: Task
+    method: str
+    result: Result
+    passed: bool | None  # None = the task has no check
+    seconds: float
+
+
+def load_tasks(path: Path) -> list[Task]:
+    """Reads [[task]] tables from a TOML file. `project` is relative to that file."""
+    data = tomllib.loads(path.read_text("utf-8"))
+    tasks = []
+    for item in data.get("task", []):
+        missing = {"name", "project", "request"} - item.keys()
+        if missing:
+            raise ValueError(f"task {item.get('name', '?')}: missing {', '.join(sorted(missing))}")
+        project = (path.parent / item["project"]).resolve()
+        if not project.is_dir():
+            raise ValueError(f"task {item['name']}: project folder {project} does not exist")
+        tasks.append(Task(item["name"], project, item["request"], item.get("check", "")))
+    if not tasks:
+        raise ValueError(f"{path}: no [[task]] entries")
+    return tasks
+
+
+def baseline_model(settings: Settings) -> str:
+    """The middle rung: what people typically reach for when they just 'ask the model'."""
+    return settings.models[min(1, len(settings.models) - 1)]
+
+
+def parse_files(text: str) -> list[tuple[str, str]]:
+    return [(m.group("path").strip(), m.group("body")) for m in _FILE_BLOCK.finditer(text)]
+
+
+def baseline(request: str, settings: Settings, llm: LLM, model: str) -> Result:
+    result = Result(request=request, level="baseline", models=[model], prices=settings.prices)
+    files = list_source_files(settings)
+    result.files = files
+    parts = [f"Request: {request}", "", "Project files:"]
+    for rel in files:
+        parts.append(f"{rel}\n```\n{(settings.root / rel).read_text('utf-8', 'replace')}\n```")
+    reply = llm.complete(
+        model=model,
+        system=BASELINE_SYSTEM,
+        prompt="\n".join(parts),
+        max_tokens=max(settings.max_output_tokens, 16_000),
+    )
+    reply.role = "baseline"
+    result.replies.append(reply)
+    result.model = model
+
+    try:
+        for rel, body in parse_files(reply.text):
+            path = resolve(settings.root, rel)
+            old = path.read_text("utf-8") if path.exists() else None
+            if body != old:
+                result.changes.append(Change(rel, old, body))
+    except EditError as exc:
+        result.error = str(exc)
+        return result
+    if not result.changes:
+        result.error = "no whole-file blocks in the reply"
+    return result
+
+
+def run_check(command: str, root: Path, checks_dir: Path) -> bool:
+    command = command.replace("{checks}", str(checks_dir)).replace("{python}", sys.executable)
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(root), os.getenv("PYTHONPATH", "")])}
+    try:
+        done = subprocess.run(
+            command, shell=True, cwd=root, env=env, capture_output=True, timeout=CHECK_TIMEOUT
+        )
+    except subprocess.TimeoutExpired:
+        return False
+    return done.returncode == 0
+
+
+def run_task(
+    task: Task, method: str, settings: Settings, llm: LLM, checks_dir: Path, model: str = ""
+) -> Outcome:
+    with tempfile.TemporaryDirectory(prefix="tokenwise-bench-") as tmp:
+        copy = Path(tmp) / task.project.name
+        shutil.copytree(task.project, copy, ignore=_COPY_IGNORE)
+        local = replace(settings, root=copy, cache=False)
+
+        start = time.perf_counter()
+        if method == "baseline":
+            result = baseline(task.request, local, llm, model or baseline_model(settings))
+        else:
+            result = run(task.request, local, llm, model)
+        seconds = time.perf_counter() - start
+
+        passed: bool | None = None
+        if result.ok:
+            apply_changes(local, result.changes)
+            if task.check:
+                passed = run_check(task.check, copy, checks_dir)
+        elif task.check:
+            passed = False
+    return Outcome(task, method, result, passed, seconds)
+
+
+def savings(before: float, after: float) -> str:
+    """Relative change from baseline to tokenwise; negative means tokenwise used less."""
+    if not before:
+        return "–"
+    return f"{100 * (after - before) / before:+.0f}%"
+
+
+def totals(outcomes: list[Outcome], method: str) -> dict:
+    mine = [o for o in outcomes if o.method == method]
+    checked = [o for o in mine if o.passed is not None]
+    return {
+        "tasks": len(mine),
+        "ok": sum(o.result.ok for o in mine),
+        "passed": sum(bool(o.passed) for o in checked),
+        "checked": len(checked),
+        "input": sum(o.result.usage.input_tokens + o.result.usage.cache_read_tokens for o in mine),
+        "output": sum(o.result.usage.output_tokens for o in mine),
+        "cost": sum(o.result.cost for o in mine),
+        "lines": sum(sum(o.result.lines) for o in mine),
+        "seconds": sum(o.seconds for o in mine),
+    }
+
+
+def markdown(outcomes: list[Outcome]) -> str:
+    def check(o: Outcome) -> str:
+        return "–" if o.passed is None else ("✅" if o.passed else "❌")
+
+    lines = [
+        "| Task | Method | Model | Input tok | Output tok | Cost ($) | Lines changed | Check |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | :---: |",
+    ]
+    for o in outcomes:
+        u = o.result.usage
+        model = o.result.model or (o.result.models[-1] if o.result.models else "")
+        lines.append(
+            f"| {o.task.name} | {o.method} | {model} | {u.input_tokens + u.cache_read_tokens:,} | "
+            f"{u.output_tokens:,} | {o.result.cost:.4f} | {sum(o.result.lines)} | {check(o)} |"
+        )
+
+    methods = [m for m in METHODS if any(o.method == m for o in outcomes)]
+    if len(methods) == 2:
+        b, t = totals(outcomes, "baseline"), totals(outcomes, "tokenwise")
+
+        def row(label: str, key: str, fmt: str) -> str:
+            return f"| {label} | {b[key]:{fmt}} | {t[key]:{fmt}} | {savings(b[key], t[key])} |"
+
+        lines += [
+            "",
+            "| Total | baseline | tokenwise | Change |",
+            "| --- | ---: | ---: | ---: |",
+            row("Cost ($)", "cost", ".4f"),
+            row("Input tokens", "input", ","),
+            row("Output tokens", "output", ","),
+            row("Lines changed", "lines", ","),
+            f"| Checks passed | {b['passed']}/{b['checked']} | {t['passed']}/{t['checked']} | |",
+            f"| Time (s) | {b['seconds']:.0f} | {t['seconds']:.0f} | |",
+        ]
+    return "\n".join(lines) + "\n"
