@@ -61,6 +61,7 @@ def init(
 ) -> None:
     """Create tokenwise.toml and .env, and keep secrets out of git."""
     root = root.resolve()
+    root.mkdir(parents=True, exist_ok=True)
     config = root / CONFIG_FILE
     if not config.exists():
         config.write_text(config_template("openai" if local else "anthropic"), "utf-8")

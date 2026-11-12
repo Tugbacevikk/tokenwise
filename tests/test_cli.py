@@ -84,6 +84,7 @@ def test_ask_forced_model_and_no_cache(project, monkeypatch, fake):
 
 
 def test_init_local_writes_openai_config(tmp_path):
+    tmp_path = tmp_path / "new-project"  # init creates the folder when it is missing
     result = runner.invoke(cli.app, ["init", "--root", str(tmp_path), "--local"])
     assert result.exit_code == 0, result.output
     text = (tmp_path / "tokenwise.toml").read_text()
