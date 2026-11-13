@@ -39,10 +39,14 @@ def _python_problems(path: str, old: str | None, new: str) -> tuple[list[str], s
     if old is not None:
         try:
             old_tree = ast.parse(old)
+            compile(old_tree, path, "exec", dont_inherit=True)
         except SyntaxError:
             return [], set()  # it was already broken; do not blame the change
     try:
         new_tree = ast.parse(new)
+        # ast.parse accepts some invalid code ('return' outside a function, 'break' outside a
+        # loop, 'await' outside async); only compiling finds those. Seen in a real run.
+        compile(new_tree, path, "exec", dont_inherit=True)
     except SyntaxError as exc:
         line = (exc.text or "").strip()
         where = f"line {exc.lineno}" + (f" (`{line}`)" if line else "")

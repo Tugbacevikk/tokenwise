@@ -68,3 +68,11 @@ def test_error_says_what_went_wrong_last(tmp_path, fake):
     bad = "a.py\n<<<<<<< SEARCH\nnope\n=======\ny\n>>>>>>> REPLACE"
     proposal = propose("x", ["a.py"], Settings(root=tmp_path), fake(bad, bad), ["a.py"], ["m"])
     assert proposal.error == "no applicable edit from m; last problem: a.py: SEARCH text not found"
+
+
+def test_errors_only_the_compiler_finds(tmp_path):
+    old = "def f(x):\n    if x:\n        return 1\n    return 0\n"
+    new = "def f(x):\n    pass\nif True:\n    return 1\n"  # the return fell out of the function
+    (found,) = problems(tmp_path, [ch("a.py", old, new)], ["a.py"])
+    assert "'return' outside function" in found and "line 4" in found
+    assert problems(tmp_path, [ch("b.py", None, "for x in y:\n    pass\nbreak\n")], ["b.py"])

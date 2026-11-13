@@ -12,7 +12,8 @@ First release.
   placeholders (`path/to/predict.py`) are matched to the one real file with that name.
 - A check that exits with 77 is "skipped", not failed: the GitHub tasks' checks skip
   when node, php or javac is not installed. Check output is read as UTF-8 on Windows.
-- Guard: a change that leaves a Python file unparsable, or removes a name the file or
+- Guard: a change that leaves a Python file unparsable or uncompilable ('return' outside a
+  function), or removes a name the file or
   another module still uses, goes back to the model as a failed attempt.
 - `map_max_tokens`: large projects get a shorter map (tests as paths, then names only,
   then top-level names, then paths); 8000 for local models, 16000 otherwise.
