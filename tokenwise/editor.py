@@ -340,6 +340,9 @@ def propose(
             if verify is None or not changes:
                 return proposal
             check = verify(changes)
+            if getattr(check, "skipped", False):  # could not run here: offer it unverified
+                proposal.check_output = check.output
+                return proposal
             proposal.check_passed, proposal.check_output = check.passed, check.output
             if check.passed:
                 return proposal

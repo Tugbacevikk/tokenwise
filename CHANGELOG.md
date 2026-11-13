@@ -7,6 +7,8 @@ a change that breaks existing use bumps major.
 
 First release.
 
+- A check that exits with 77 is "skipped", not failed: the GitHub tasks' checks skip
+  when node, php or javac is not installed. Check output is read as UTF-8 on Windows.
 - Guard: a change that leaves a Python file unparsable, or removes a name the file or
   another module still uses, goes back to the model as a failed attempt.
 - `map_max_tokens`: large projects get a shorter map (tests as paths, then names only,

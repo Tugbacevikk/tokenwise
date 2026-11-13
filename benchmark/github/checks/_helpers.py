@@ -1,6 +1,7 @@
 """Shared by the check scripts. They run inside a copy of the project (cwd = its root)."""
 
 import importlib
+import shutil
 import importlib.util
 import sys
 from pathlib import Path
@@ -40,3 +41,11 @@ def raises(error, fn, *args, **kwargs) -> bool:
     except error:
         return True
     return False
+
+
+def require(*tools: str) -> None:
+    """Skips the check (exit 77, not a failure) when a tool it needs is not installed."""
+    missing = [t for t in tools if shutil.which(t) is None]
+    if missing:
+        print(f"SKIP: not installed: {', '.join(missing)}")
+        sys.exit(77)

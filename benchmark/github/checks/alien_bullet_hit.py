@@ -2,6 +2,9 @@ import os, subprocess, sys, textwrap
 
 sys.path.insert(0, os.path.dirname(__file__))
 from _helpers import source
+from _helpers import require
+
+require("node")
 
 code = source("js/game.js")
 start = code.index("function isColliding")

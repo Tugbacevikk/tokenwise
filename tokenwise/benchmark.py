@@ -174,7 +174,8 @@ def run_task(
             apply_changes(local, result.changes)
             if task.check:
                 check = run_command(task.check, copy, CHECK_TIMEOUT, checks_dir)
-                passed, output = check.passed, check.output
+                passed = None if check.skipped else check.passed
+                output = check.output
         elif task.check:
             passed = False
     return Outcome(task, method, result, passed, seconds, output)

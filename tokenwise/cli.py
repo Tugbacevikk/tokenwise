@@ -445,7 +445,8 @@ def benchmark(
                 except LLMError as exc:  # server down, unknown model: every task would fail
                     _fail(f"{task.name} · {method}: {exc}")
             ledger.record(outcome.result, method=method)
-            mark = {None: "", True: " [green]check passed[/]", False: " [red]check failed[/]"}
+            skipped = f" [yellow]check skipped: {outcome.check_output}[/]" if task.check else ""
+            mark = {None: skipped, True: " [green]check passed[/]", False: " [red]check failed[/]"}
             status = "ok" if outcome.result.ok else f"[red]{outcome.result.error}[/]"
             console.print(
                 f"{task.name} · {method}: {status} · {format_usd(outcome.result.cost)}"

@@ -1,4 +1,10 @@
 import os, shutil, subprocess, tempfile
+import sys
+
+sys.path.insert(0, os.path.dirname(__file__))
+from _helpers import require
+
+require("javac", "java")
 
 out = tempfile.mkdtemp()
 assert subprocess.run(["javac", "-d", out, "TuglangLexer.java"]).returncode == 0

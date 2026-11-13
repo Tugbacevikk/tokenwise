@@ -1,6 +1,9 @@
 import os, subprocess, sys, time
 
 sys.path.insert(0, os.path.dirname(__file__))
+from _helpers import require
+
+require("node")
 
 assert subprocess.run(["node", "--check", "server.js"]).returncode == 0
 proc = subprocess.Popen(

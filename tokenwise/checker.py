@@ -28,6 +28,10 @@ OUTPUT_TAIL = 3000
 class CheckResult:
     passed: bool
     output: str
+    skipped: bool = False  # the check could not run here (exit code 77, e.g. a tool is missing)
+
+
+SKIP_EXIT = 77  # the usual "skipped" exit code of test runners (automake, meson)
 
 
 def expand(command: str, checks_dir: Path | None = None) -> str:
@@ -43,7 +47,12 @@ def expand(command: str, checks_dir: Path | None = None) -> str:
 def run_command(
     command: str, root: Path, timeout: int, checks_dir: Path | None = None
 ) -> CheckResult:
-    env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(root), os.getenv("PYTHONPATH", "")])}
+    env = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join([str(root), os.getenv("PYTHONPATH", "")]),
+        "PYTHONIOENCODING": "utf-8",  # Windows pipes default to the ANSI code page
+        "PYTHONUTF8": "1",
+    }
     try:
         done = subprocess.run(
             expand(command, checks_dir),
@@ -58,8 +67,10 @@ def run_command(
         )
     except subprocess.TimeoutExpired:
         return CheckResult(False, f"check timed out after {timeout} s")
-    output = (done.stdout + done.stderr).strip()
-    return CheckResult(done.returncode == 0, output[-OUTPUT_TAIL:])
+    output = (done.stdout + done.stderr).strip()[-OUTPUT_TAIL:]
+    if done.returncode == SKIP_EXIT:
+        return CheckResult(False, output, skipped=True)
+    return CheckResult(done.returncode == 0, output)
 
 
 def copy_project(source: Path, target: Path) -> None:

@@ -241,3 +241,17 @@ def test_failure_details_show_the_last_reply(fake):
     )
     md = markdown([outcome])
     assert "Last reply (editor," in md and "not in the file" in md
+
+
+def test_skipped_check_is_not_a_failure(tmp_path, monkeypatch, fake):
+    project = (BENCH / "projects/shop").as_posix()
+    tasks = tmp_path / "tasks.toml"
+    skip = "{python} -c \\\"import sys; print('SKIP: not installed: javac'); sys.exit(77)\\\""
+    tasks.write_text(
+        f'[[task]]\nname = "java"\nproject = "{project}"\nrequest = "x"\ncheck = "{skip}"\n'
+    )
+    monkeypatch.setattr(cli, "make_llm", lambda s: fake('["cart.py"]', TYPO_EDIT))
+    result = CliRunner().invoke(cli.app, ["benchmark", str(tasks), "--methods", "tokenwise"])
+    assert result.exit_code == 0, result.output
+    assert "check skipped: SKIP: not installed: javac" in result.output.replace("\n", " ")
+    assert "checks passed │       0/0" in result.output or "0/0" in result.output

@@ -100,3 +100,27 @@ def test_paths_with_spaces_are_quoted(tmp_path):
     (checks / "t.py").write_text("print('ran')\n")
     result = run_command("{python} {checks}/t.py", tmp_path, 30, checks)
     assert result.passed and result.output == "ran", result.output
+
+
+def test_exit_77_means_skipped(tmp_path, settings, fake):
+    from tokenwise.checker import make_verifier
+
+    skip = "{python} -c \"import sys; print('SKIP: not installed: php'); sys.exit(77)\""
+    result = run_command(skip, tmp_path, 30)
+    assert result.skipped and not result.passed and result.output == "SKIP: not installed: php"
+    # a check that cannot run does not block the change; it is offered unverified
+    proposal = propose(
+        "x",
+        ["app/auth.py"],
+        settings,
+        fake(LENGTH_CHECK),
+        ALL_FILES,
+        ["m"],
+        make_verifier(settings, skip),
+    )
+    assert proposal.changes and proposal.check_passed is None and proposal.error is None
+
+
+def test_child_output_is_utf8(tmp_path):
+    result = run_command("{python} -c \"print('dosyayı bulamıyor ş ğ')\"", tmp_path, 30)
+    assert result.output == "dosyayı bulamıyor ş ğ"

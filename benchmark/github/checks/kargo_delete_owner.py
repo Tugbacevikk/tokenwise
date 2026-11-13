@@ -2,6 +2,9 @@ import os, re, subprocess, sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 from _helpers import source
+from _helpers import require
+
+require("php")
 
 assert subprocess.run(["php", "-l", "kargo_sil.php"], capture_output=True).returncode == 0
 code = source("kargo_sil.php")
