@@ -7,6 +7,11 @@ a change that breaks existing use bumps major.
 
 First release.
 
+- `provider = "ollama"` uses Ollama's own API and sizes the context window to each
+  prompt (`max_context` caps it); its OpenAI endpoint silently cut long prompts.
+  `init --local` now writes it.
+- `tokenwise doctor`: config, server reachability, configured models present or missing.
+- Model errors (server down, unknown model, HTTP errors) are one readable line, not a traceback.
 - Benchmark tasks can pin a GitHub repository at a commit (`repo`, `ref`, `subdir`);
   `benchmark/github/` has 20 tasks from real projects with checks and an offline estimate.
 - The router sizes a focused file by the part that is sent, not the whole file.

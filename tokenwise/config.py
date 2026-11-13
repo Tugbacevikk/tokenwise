@@ -37,10 +37,11 @@ DEFAULT_IGNORE_DIRS = (
 )
 ANTHROPIC_MODELS = ("claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5")
 LOCAL_MODELS = ("qwen2.5-coder:7b",)
-OLLAMA_URL = "http://localhost:11434/v1"
+OLLAMA_URL = "http://localhost:11434"
 
 CONFIG_TEMPLATE = """[tokenwise]
-# "anthropic" (Claude API) or "openai" (any OpenAI-compatible server: Ollama, LM Studio, vLLM)
+# "anthropic" (Claude API), "ollama" (local models) or "openai" (any OpenAI-compatible
+# server such as LM Studio or vLLM; set base_url, e.g. "http://localhost:1234/v1")
 provider = "{provider}"
 {base_url_line}
 # Model ladder, cheapest first. The selector always uses the first one; the editor starts
@@ -54,6 +55,8 @@ max_files = 8
 focus_lines = 300
 # Stop asking once the last 7 days cost this much (USD). 0 = no limit.
 budget_usd_week = 0
+# Ollama only: the largest context window tokenwise may ask for. Bigger needs more GPU memory.
+max_context = 32768
 # Command that must pass before a change is offered, run in a throwaway copy of the project.
 # A failing check is sent back to the model to fix. {{python}} = the Python running tokenwise.
 # check = "{{python}} -m pytest -q -x"
@@ -66,7 +69,7 @@ budget_usd_week = 0
 
 
 def config_template(provider: str) -> str:
-    local = provider == "openai"
+    local = provider == "ollama"
     return CONFIG_TEMPLATE.format(
         provider=provider,
         base_url_line=f'base_url = "{OLLAMA_URL}"' if local else f'# base_url = "{OLLAMA_URL}"',
@@ -90,6 +93,7 @@ class Settings:
     max_files: int = 8
     focus_lines: int = 300
     budget_usd_week: float = 0.0
+    max_context: int = 32768
     max_output_tokens: int = 4096
     cache: bool = True
     check: str = ""

@@ -88,7 +88,7 @@ def test_init_local_writes_openai_config(tmp_path):
     result = runner.invoke(cli.app, ["init", "--root", str(tmp_path), "--local"])
     assert result.exit_code == 0, result.output
     text = (tmp_path / "tokenwise.toml").read_text()
-    assert 'provider = "openai"' in text and "localhost:11434" in text
+    assert 'provider = "ollama"' in text and "localhost:11434" in text
     assert "ollama pull" in result.output
     assert not (tmp_path / ".env").exists()
 
@@ -158,3 +158,57 @@ def test_report_table_and_csv(project, monkeypatch, fake, tmp_path):
     assert result.exit_code == 0, result.output
     assert "last 7 days" in result.output and "claude-sonnet-5-5" in result.output
     assert out.read_text().splitlines()[0].startswith("id,ts,method,request")
+
+
+class _Server:
+    def __init__(self, models):
+        self.models = models
+
+    def list_models(self):
+        return self.models
+
+    def context_for(self, system, prompt, max_tokens):
+        return 4096
+
+
+def test_doctor_reports_missing_model(project, monkeypatch):
+    from tokenwise import llm as llm_module
+
+    (project / "tokenwise.toml").write_text(
+        '[tokenwise]\nprovider = "ollama"\nmodels = ["qwen2.5-coder:7b"]\n'
+    )
+    monkeypatch.setattr(llm_module, "make_backend", lambda s: _Server(["qwen2.5-coder:3b"]))
+    result = runner.invoke(cli.app, ["doctor", "-r", str(project)])
+    assert result.exit_code == 1
+    assert (
+        "qwen2.5-coder:7b: missing" in result.output
+        and "ollama pull qwen2.5-coder:7b" in result.output
+    )
+
+    monkeypatch.setattr(llm_module, "make_backend", lambda s: _Server(["qwen2.5-coder:7b"]))
+    result = runner.invoke(cli.app, ["doctor", "-r", str(project)])
+    assert result.exit_code == 0 and "All good" in result.output
+
+
+def test_doctor_with_api_key(project, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    result = runner.invoke(cli.app, ["doctor", "-r", str(project)])
+    assert result.exit_code == 0 and "API key found" in result.output
+
+
+def test_model_error_is_a_clean_message(project, monkeypatch):
+    from tokenwise.llm import LLMError
+
+    class Broken:
+        def complete(self, **kw):
+            raise LLMError("model 'x' was not found on http://localhost:11434")
+
+    monkeypatch.setattr(cli, "make_llm", lambda s: Broken())
+    result = runner.invoke(cli.app, ["ask", "x", "-r", str(project)])
+    assert (
+        result.exit_code == 1
+        and "was not found" in result.output
+        and "Traceback" not in result.output
+    )
+    result = runner.invoke(cli.app, ["ask", "x", "-r", str(project), "--json"])
+    assert '"ok": false' in result.output and "was not found" in result.output

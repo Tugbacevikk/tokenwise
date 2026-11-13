@@ -41,6 +41,7 @@ pip install -e ".[dev]"
 ```powershell
 tokenwise init                 # tokenwise.toml ve .env oluşturur, API anahtarını sorar
 tokenwise init --local         # API yerine yerel model (Ollama) için ayar dosyası
+tokenwise doctor               # ayar, model sunucusu ve modeller hazır mı
 tokenwise map                  # proje haritası ve "tüm kaynak vs harita" token karşılaştırması
 tokenwise ask "login fonksiyonuna şifre uzunluk kontrolü ekle"
 tokenwise ask "..." --dry-run  # sadece farkı göster, dosyaya yazma
@@ -65,13 +66,18 @@ Başka bir klasör için her komuta `--root <klasör>` verebilirsin.
 [Ollama](https://ollama.com) kurulu olsun, bir kodlama modeli indir ve projende `--local` ile başla:
 
 ```powershell
-ollama pull qwen2.5-coder:7b   # 4 GB VRAM'li ekran kartında çalışır; daha hızlı istersen qwen2.5-coder:3b
+ollama pull qwen2.5-coder:7b   # 4 GB VRAM'e tam sığmaz, yavaş olur; daha hızlısı: qwen2.5-coder:3b
 cd <projen>
-tokenwise init --local
+tokenwise init --local         # provider = "ollama", models = ["qwen2.5-coder:7b"]
+tokenwise doctor               # sunucu çalışıyor mu, ayardaki model indirilmiş mi?
 tokenwise ask "..." --dry-run
 ```
 
-`init --local`, `provider = "openai"` ve `base_url = "http://localhost:11434/v1"` yazar; LM Studio, vLLM ya da OpenAI'nin kendisi gibi OpenAI uyumlu her sunucu aynı yoldan çalışır (anahtar gerekiyorsa `OPENAI_API_KEY` ortam değişkeni).
+3b indirdiysen `tokenwise.toml`'daki `models` satırını `["qwen2.5-coder:3b"]` yap; `tokenwise doctor` eksik modeli söyler.
+
+tokenwise Ollama'nın kendi API'sini kullanır ve her istek için bağlam penceresini (`num_ctx`) istemin boyuna göre ayarlar. Ollama'nın OpenAI uyumlu adresi varsayılan pencereyi (birkaç bin token) kullanır ve uzun istemleri **sessizce keser**; büyük bir projenin haritası o zaman modele yarım gider. Pencerenin üst sınırı `max_context` ayarıdır (varsayılan 32768). Daha büyüğü daha çok ekran kartı belleği ister.
+
+LM Studio, vLLM ya da OpenAI'nin kendisi gibi OpenAI uyumlu sunucular için `provider = "openai"` ve `base_url = "http://localhost:1234/v1"` gibi bir adres yaz. Anahtar gerekiyorsa `OPENAI_API_KEY` ortam değişkenini kullan.
 
 ### Ayarlar
 
@@ -79,8 +85,8 @@ tokenwise ask "..." --dry-run
 
 ```toml
 [tokenwise]
-provider = "anthropic"          # ya da "openai" (Ollama, LM Studio, vLLM...)
-# base_url = "http://localhost:11434/v1"
+provider = "anthropic"          # ya da "ollama" (yerel), "openai" (LM Studio, vLLM...)
+# base_url = "http://localhost:11434"
 models = ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"]   # ucuzdan güçlüye
 extensions = [".py", ".js", ".jsx", ".ts", ".tsx"]
 max_files = 8

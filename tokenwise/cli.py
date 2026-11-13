@@ -18,7 +18,7 @@ from . import llm as llm_module
 from .config import CONFIG_FILE, STATE_DIR, Settings, config_template, load_settings
 from .editor import Change, EditError, apply_changes, resolve, undo_last
 from .ledger import Ledger, ledger_path
-from .llm import LLM, CachedLLM, ConfigError, cache_path
+from .llm import LLM, CachedLLM, ConfigError, LLMError, cache_path
 from .pipeline import Result, run
 from .pricing import format_usd, reply_cost
 from .repo_map import build_map, estimate_tokens, list_source_files, source_tokens
@@ -73,7 +73,7 @@ def init(
     root.mkdir(parents=True, exist_ok=True)
     config = root / CONFIG_FILE
     if not config.exists():
-        config.write_text(config_template("openai" if local else "anthropic"), "utf-8")
+        config.write_text(config_template("ollama" if local else "anthropic"), "utf-8")
         console.print(f"Created {CONFIG_FILE}" + (" for a local model" if local else ""))
 
     if not local:
@@ -201,14 +201,18 @@ def ask(
     except ConfigError as exc:
         _fail(str(exc), as_json)
 
-    if as_json:
-        try:
+    try:
+        if as_json:
             result = run(request, settings, llm, model)
-        except Exception as exc:  # the editor shows this to the user, so never crash silently
-            _fail(f"{type(exc).__name__}: {exc}", as_json=True)
-    else:
-        with console.status("Choosing files and writing the change..."):
-            result = run(request, settings, llm, model)
+        else:
+            with console.status("Choosing files and writing the change..."):
+                result = run(request, settings, llm, model)
+    except LLMError as exc:
+        _fail(str(exc), as_json)
+    except Exception as exc:  # the editor shows this to the user, so never crash silently
+        if not as_json:
+            raise
+        _fail(f"{type(exc).__name__}: {exc}", as_json=True)
 
     run_id = ledger.record(result)
     budget_note = ""
@@ -428,7 +432,10 @@ def benchmark(
     for task in tasks:
         for method in chosen:
             with console.status(f"{task.name} · {method}..."):
-                outcome = run_task(task, method, settings, llm, checks_dir, model)
+                try:
+                    outcome = run_task(task, method, settings, llm, checks_dir, model)
+                except LLMError as exc:
+                    _fail(f"{task.name} · {method}: {exc}")
             ledger.record(outcome.result, method=method)
             mark = {None: "", True: " [green]check passed[/]", False: " [red]check failed[/]"}
             status = "ok" if outcome.result.ok else f"[red]{outcome.result.error}[/]"
@@ -454,6 +461,46 @@ def benchmark(
     table.add_row("checks passed", *(f"{s['passed']}/{s['checked']}" for s in stats))
     console.print(table)
     console.print(f"Wrote {out}")
+
+
+@app.command()
+def doctor(root: Path = RootOption) -> None:
+    """Check the setup: config, model server, and that the configured models exist."""
+    settings = load_settings(root)
+    config = settings.root / CONFIG_FILE
+    console.print(f"Config:   {config if config.exists() else 'no tokenwise.toml, using defaults'}")
+    console.print(
+        f"Provider: {settings.provider}" + (f" ({settings.base_url})" if settings.base_url else "")
+    )
+    console.print(f"Models:   {' → '.join(settings.models)}")
+    files = list_source_files(settings)
+    map_tokens = estimate_tokens(build_map(settings, files))
+    console.print(f"Project:  {len(files)} source files, map ≈ {map_tokens:,} tokens")
+    try:
+        backend = llm_module.make_backend(settings)
+    except ConfigError as exc:
+        _fail(str(exc))
+    if not hasattr(backend, "list_models"):
+        console.print("[green]API key found.[/] (Models are checked on the first request.)")
+        return
+    try:
+        available = backend.list_models()
+    except LLMError as exc:
+        _fail(str(exc))
+    console.print(f"Server:   reachable, {len(available)} model(s): {', '.join(available) or '-'}")
+    missing = [m for m in settings.models if m not in available and f"{m}:latest" not in available]
+    for model in settings.models:
+        mark = "[red]missing[/]" if model in missing else "[green]ok[/]"
+        console.print(f"  {model}: {mark}")
+    if hasattr(backend, "context_for"):
+        try:
+            backend.context_for("x" * (map_tokens * 4), "", 400)
+        except LLMError as exc:
+            console.print(f"[yellow]The selector prompt for this project is too big:[/] {exc}")
+    if missing:
+        hint = "ollama pull " + missing[0] if settings.provider == "ollama" else "fix `models`"
+        _fail(f"{len(missing)} model(s) missing. Download them ({hint}) or change `models`.")
+    console.print("[green]All good.[/]")
 
 
 @app.command()

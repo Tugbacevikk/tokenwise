@@ -17,10 +17,11 @@ def test_toml_and_env_override_defaults(tmp_path, monkeypatch):
 
 
 def test_local_template_parses(tmp_path):
-    (tmp_path / "tokenwise.toml").write_text(config_template("openai"), "utf-8")
+    (tmp_path / "tokenwise.toml").write_text(config_template("ollama"), "utf-8")
     settings = load_settings(tmp_path)
-    assert settings.provider == "openai"
-    assert settings.base_url == "http://localhost:11434/v1"
+    assert settings.provider == "ollama"
+    assert settings.base_url == "http://localhost:11434"
+    assert settings.max_context == 32768
     assert settings.models == ("qwen2.5-coder:7b",)
 
 
