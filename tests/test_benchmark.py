@@ -90,8 +90,11 @@ def test_run_task_applies_in_a_copy_and_runs_the_check(method, fake):
 
 def test_run_task_failed_edit_fails_the_check(fake):
     task = load_tasks(BENCH / "tasks.toml")[0]
-    outcome = run_task(task, "tokenwise", Settings(root=BENCH), fake("[]"), BENCH / "checks")
+    # the selector finds nothing, but the request names Cart.add, so cart.py is still sent
+    llm = fake("[]", *["no edit blocks"] * 6)
+    outcome = run_task(task, "tokenwise", Settings(root=BENCH), llm, BENCH / "checks")
     assert outcome.passed is False and not outcome.result.ok
+    assert "cart.py" in llm.calls[1]["prompt"]
 
 
 def test_wrong_change_fails_the_check(fake):

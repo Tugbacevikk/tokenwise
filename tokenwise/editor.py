@@ -13,6 +13,7 @@ from .config import Settings
 from .focus import focused_view
 from .guard import problems as guard_problems
 from .llm import LLM, Reply
+from .lookup import resolve_path
 from .prompts import EDITOR_SYSTEM
 from .selector import is_safe_path, normalize_path
 from .textio import NotTextError, Style, read_source, read_style, write_source
@@ -313,6 +314,9 @@ def propose(
                 continue
             attempts += 1
             edits = parse_edits(reply.text, paths[0] if len(paths) == 1 else None)
+            for edit in edits:  # e.g. "path/to/predict.py" copied from the instructions
+                if edit.path not in all_files:
+                    edit.path = resolve_path(resolve_path(edit.path, paths), all_files)
             if not edits:
                 last_problem = "the reply had no edit blocks"
                 feedback = "Your reply had no valid edit blocks. Reply only with edit blocks."

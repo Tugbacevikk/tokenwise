@@ -9,6 +9,7 @@ from .checker import make_verifier
 from .config import Settings
 from .editor import Change, propose
 from .llm import LLM, Reply, Usage
+from .lookup import mentioned_targets, merge_selection
 from .pricing import reply_cost
 from .repo_map import build_map, list_source_files
 from .router import NAMES, difficulty, ladder
@@ -109,6 +110,8 @@ def run(request: str, settings: Settings, llm: LLM, model: str = "") -> Result:
 
     chosen, selector_reply, focus = select_files(request, repo_map, settings, llm)
     result.replies.append(selector_reply)
+    mentioned = mentioned_targets(request, settings, all_files)
+    chosen, focus = merge_selection(chosen, focus, mentioned, all_files, settings.max_files)
     result.files = chosen
     if not chosen:
         result.error = "the selector found no relevant files"

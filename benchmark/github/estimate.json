@@ -13,7 +13,7 @@
     },
     {
      "model": "claude-sonnet-5-5",
-     "input": 1339,
+     "input": 1354,
      "output": 101
     }
    ],
@@ -50,7 +50,7 @@
     },
     {
      "model": "claude-haiku-5-5",
-     "input": 1800,
+     "input": 1815,
      "output": 81
     }
    ],
@@ -87,7 +87,7 @@
     },
     {
      "model": "claude-sonnet-5-5",
-     "input": 1022,
+     "input": 1037,
      "output": 29
     }
    ],
@@ -124,7 +124,7 @@
     },
     {
      "model": "claude-haiku-5-5",
-     "input": 876,
+     "input": 891,
      "output": 93
     }
    ],
@@ -161,7 +161,7 @@
     },
     {
      "model": "claude-sonnet-5-5",
-     "input": 592,
+     "input": 607,
      "output": 68
     }
    ],
@@ -198,7 +198,7 @@
     },
     {
      "model": "claude-sonnet-5-5",
-     "input": 1746,
+     "input": 1761,
      "output": 74
     }
    ],
@@ -235,7 +235,7 @@
     },
     {
      "model": "claude-sonnet-5-5",
-     "input": 1602,
+     "input": 1617,
      "output": 128
     }
    ],
@@ -272,7 +272,7 @@
     },
     {
      "model": "claude-sonnet-5-5",
-     "input": 1258,
+     "input": 1273,
      "output": 97
     }
    ],
@@ -309,7 +309,7 @@
     },
     {
      "model": "claude-sonnet-5-5",
-     "input": 3730,
+     "input": 3745,
      "output": 95
     }
    ],
@@ -346,7 +346,7 @@
     },
     {
      "model": "claude-sonnet-5-5",
-     "input": 3970,
+     "input": 7502,
      "output": 64
     }
    ],
@@ -383,7 +383,7 @@
     },
     {
      "model": "claude-sonnet-5-5",
-     "input": 3294,
+     "input": 3309,
      "output": 60
     }
    ],
@@ -420,7 +420,7 @@
     },
     {
      "model": "claude-sonnet-5-5",
-     "input": 2413,
+     "input": 2428,
      "output": 96
     }
    ],
@@ -457,7 +457,7 @@
     },
     {
      "model": "claude-sonnet-5-5",
-     "input": 2390,
+     "input": 2405,
      "output": 96
     }
    ],
@@ -494,7 +494,7 @@
     },
     {
      "model": "claude-sonnet-5-5",
-     "input": 1300,
+     "input": 1315,
      "output": 65
     }
    ],
@@ -531,7 +531,7 @@
     },
     {
      "model": "claude-sonnet-5-5",
-     "input": 715,
+     "input": 730,
      "output": 154
     }
    ],
@@ -568,7 +568,7 @@
     },
     {
      "model": "claude-sonnet-5-5",
-     "input": 698,
+     "input": 713,
      "output": 88
     }
    ],
@@ -605,7 +605,7 @@
     },
     {
      "model": "claude-sonnet-5-5",
-     "input": 521,
+     "input": 536,
      "output": 79
     }
    ],
@@ -642,7 +642,7 @@
     },
     {
      "model": "claude-sonnet-5-5",
-     "input": 997,
+     "input": 1012,
      "output": 54
     }
    ],
@@ -679,7 +679,7 @@
     },
     {
      "model": "claude-sonnet-5-5",
-     "input": 1042,
+     "input": 1057,
      "output": 97
     }
    ],
@@ -716,7 +716,7 @@
     },
     {
      "model": "claude-sonnet-5-5",
-     "input": 548,
+     "input": 563,
      "output": 159
     }
    ],

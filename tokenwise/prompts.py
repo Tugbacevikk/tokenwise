@@ -23,8 +23,8 @@ Rules:
 - Never rewrite a whole file. Change only the lines that must change.
 - Reply ONLY with edit blocks. No explanations before or after them.
 
-Edit block format, one per change:
-path/to/file.py
+Edit block format, one per change. Its first line is the file's path exactly as shown above:
+src/shop/cart.py
 <<<<<<< SEARCH
 existing lines copied exactly, just enough to be unique in the file
 =======

@@ -6,7 +6,7 @@
 Modele bütün projeyi göndermek ve bütün dosyayı yeniden yazdırmak yerine tokenwise:
 
 1. Projenin **haritasını** çıkarır: dosya yolları ve fonksiyon/sınıf imzaları, gövdeler olmadan.
-2. **En ucuz model** haritaya bakıp işin hangi dosyalara ihtiyaç duyduğunu seçer.
+2. **En ucuz model** haritaya bakıp işin hangi dosyalara ihtiyaç duyduğunu seçer. İstekte adı geçen fonksiyon ve sınıfların dosyaları da modele sorulmadan, metin aramasıyla eklenir.
 3. **Sadece o dosyalar** düzenleyici modele gönderilir; büyük dosyalardan da sadece ilgili fonksiyonlar.
 4. **Yönlendirici** isteğin zorluğunu kurallarla tahmin eder (model çağrısı yok) ve model merdiveninin uygun basamağından başlar; model beceremezse bir üst modele geçer.
 5. Model dosyayı baştan yazmaz, sadece **değişen satırları** döndürür.
@@ -200,9 +200,9 @@ Model ayarları `benchmark/` klasöründeki `tokenwise.toml`'dan okunur (yoksa v
 
 | Toplam (20 görev) | Baseline | tokenwise | Değişim |
 | --- | ---: | ---: | ---: |
-| Giriş tokeni | 1.763.113 | 91.557 | −95% |
+| Giriş tokeni | 1.763.113 | 95.374 | −95% |
 | Çıkış tokeni | 70.837 | 1.903 | −97% |
-| Maliyet ($) | 4,23 | 0,08 | −98% |
+| Maliyet ($) | 4,23 | 0,09 | −98% |
 
 Nasıl hesaplandı:
 - İki yöntem de tokenwise'ın gerçek kodundan geçti: harita, seçici istemi, yönlendirici, odaklı görünüm, edit ayrıştırma ve baseline istemi.

@@ -7,6 +7,9 @@ a change that breaks existing use bumps major.
 
 First release.
 
+- Files defining a function or class named in the request are added to the selection
+  (first) and focused on that symbol; invented paths (`core/isci_takip.py`) and copied
+  placeholders (`path/to/predict.py`) are matched to the one real file with that name.
 - A check that exits with 77 is "skipped", not failed: the GitHub tasks' checks skip
   when node, php or javac is not installed. Check output is read as UTF-8 on Windows.
 - Guard: a change that leaves a Python file unparsable, or removes a name the file or
