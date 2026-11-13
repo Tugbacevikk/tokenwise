@@ -31,9 +31,12 @@ class CheckResult:
 
 
 def expand(command: str, checks_dir: Path | None = None) -> str:
+    """Fills {python} and {checks}, quoted: paths such as C:\\Users\\ADIL CEVIK contain spaces.
+    A quoted part followed by more text ("C:\\a b\\checks"/t.py) is still one argument for
+    both cmd.exe programs and POSIX shells."""
     command = command.replace("{python}", f'"{sys.executable}"')
     if checks_dir is not None:
-        command = command.replace("{checks}", str(checks_dir))
+        command = command.replace("{checks}", f'"{checks_dir}"')
     return command
 
 

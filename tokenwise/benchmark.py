@@ -48,6 +48,7 @@ class Outcome:
     result: Result
     passed: bool | None  # None = the task has no check
     seconds: float
+    check_output: str = ""
 
 
 REPOS_DIR = ".repos"
@@ -168,13 +169,15 @@ def run_task(
         seconds = time.perf_counter() - start
 
         passed: bool | None = None
+        output = ""
         if result.ok:
             apply_changes(local, result.changes)
             if task.check:
-                passed = run_command(task.check, copy, CHECK_TIMEOUT, checks_dir).passed
+                check = run_command(task.check, copy, CHECK_TIMEOUT, checks_dir)
+                passed, output = check.passed, check.output
         elif task.check:
             passed = False
-    return Outcome(task, method, result, passed, seconds)
+    return Outcome(task, method, result, passed, seconds, output)
 
 
 def savings(before: float, after: float) -> str:
@@ -198,6 +201,26 @@ def totals(outcomes: list[Outcome], method: str) -> dict:
         "lines": sum(sum(o.result.lines) for o in mine),
         "seconds": sum(o.seconds for o in mine),
     }
+
+
+def details(outcomes: list[Outcome]) -> str:
+    """What went wrong, per failed run: the error or the diff plus the check's output."""
+    parts = []
+    for o in outcomes:
+        if o.passed is not False and o.result.ok:
+            continue
+        diff = "".join(c.diff for c in o.result.changes) or "(no change)"
+        lines = [
+            f"<details><summary>{o.task.name} · {o.method}: "
+            f"{o.result.error or 'check failed'}</summary>",
+            "",
+        ]
+        lines += ["```diff", diff.rstrip(), "```"]
+        if o.check_output:
+            lines += ["", "```", o.check_output.rstrip(), "```"]
+        lines += ["", "</details>", ""]
+        parts.append("\n".join(lines))
+    return ("\n## Failures\n\n" + "\n".join(parts)) if parts else ""
 
 
 def markdown(outcomes: list[Outcome]) -> str:
@@ -234,4 +257,4 @@ def markdown(outcomes: list[Outcome]) -> str:
             f"| Checks passed | {b['passed']}/{b['checked']} | {t['passed']}/{t['checked']} | |",
             f"| Time (s) | {b['seconds']:.0f} | {t['seconds']:.0f} | |",
         ]
-    return "\n".join(lines) + "\n"
+    return "\n".join(lines) + "\n" + details(outcomes)

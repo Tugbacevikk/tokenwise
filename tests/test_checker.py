@@ -18,7 +18,7 @@ WRONG = LENGTH_CHECK.replace("password too short", "nope")
 
 def test_expand_and_run_command(tmp_path):
     assert expand("{python} x", None).startswith(f'"{sys.executable}"')
-    assert expand("{checks}/t.py", tmp_path) == f"{tmp_path}/t.py"
+    assert expand("{checks}/t.py", tmp_path) == f'"{tmp_path}"/t.py'
     ok = run_command("{python} -c \"print('hi')\"", tmp_path, 30)
     assert ok.passed and ok.output == "hi"
     bad = run_command("{python} -c \"import sys; print('boom'); sys.exit(3)\"", tmp_path, 30)
@@ -92,3 +92,11 @@ def test_config_check_and_no_check(project, monkeypatch, fake):
     assert seen["check"] == CHECK
     CliRunner().invoke(cli.app, ["ask", "x", "-r", str(project), "--dry-run", "--no-check"])
     assert seen["check"] == ""
+
+
+def test_paths_with_spaces_are_quoted(tmp_path):
+    checks = tmp_path / "ADIL CEVIK" / "checks"
+    checks.mkdir(parents=True)
+    (checks / "t.py").write_text("print('ran')\n")
+    result = run_command("{python} {checks}/t.py", tmp_path, 30, checks)
+    assert result.passed and result.output == "ran", result.output

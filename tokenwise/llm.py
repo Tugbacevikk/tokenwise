@@ -72,6 +72,10 @@ class LLMError(Exception):
     """A model call failed in a way the user can fix (server down, unknown model, bad key)."""
 
 
+class ContextTooLongError(LLMError):
+    """This prompt does not fit the model's context window; smaller prompts may still work."""
+
+
 def _post(client, url: str, body: dict, model: str, server: str):
     import httpx
 
@@ -159,7 +163,7 @@ class OllamaLLM:
         need = (len(system) + len(prompt)) // 3 + max_tokens + 512
         size = max(4096, -(-need // 2048) * 2048)
         if size > self.max_context:
-            raise LLMError(
+            raise ContextTooLongError(
                 f"the prompt needs a context of about {need:,} tokens but max_context is "
                 f"{self.max_context:,}. Raise max_context in tokenwise.toml if the model and "
                 "your GPU allow it, or exclude folders from the map (extensions, ignore_dirs)."

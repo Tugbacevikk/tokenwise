@@ -18,7 +18,7 @@ from . import llm as llm_module
 from .config import CONFIG_FILE, STATE_DIR, Settings, config_template, load_settings
 from .editor import Change, EditError, apply_changes, resolve, undo_last
 from .ledger import Ledger, ledger_path
-from .llm import LLM, CachedLLM, ConfigError, LLMError, cache_path
+from .llm import LLM, CachedLLM, ConfigError, ContextTooLongError, LLMError, cache_path
 from .pipeline import Result, run
 from .pricing import format_usd, reply_cost
 from .repo_map import build_map, estimate_tokens, list_source_files, source_tokens
@@ -401,14 +401,17 @@ def benchmark(
     methods: str = typer.Option(
         "baseline,tokenwise", "--methods", help="Comma-separated: baseline, tokenwise."
     ),
-    out: Path = typer.Option(
-        Path("benchmark/results.md"), "--out", "-o", help="Markdown file for the results."
+    out: Path | None = typer.Option(
+        None,
+        "--out",
+        "-o",
+        help="Markdown file for the results (default: results.md next to the tasks).",
     ),
     model: str = typer.Option("", "--model", "-m", help="Force one model for both methods."),
     only: str = typer.Option("", "--only", help="Run only tasks whose name contains this."),
 ) -> None:
     """Run every task twice, the usual way and the tokenwise way, and compare cost and results."""
-    from .benchmark import METHODS, load_tasks, markdown, run_task, totals
+    from .benchmark import METHODS, Outcome, load_tasks, markdown, run_task, totals
 
     chosen = [m.strip() for m in methods.split(",") if m.strip()]
     if not chosen or any(m not in METHODS for m in chosen):
@@ -418,6 +421,7 @@ def benchmark(
     except (OSError, ValueError) as exc:
         _fail(str(exc))
     tasks = [t for t in tasks if only in t.name]
+    out = out or tasks_file.parent / "results.md"
 
     settings = load_settings(tasks_file.parent)
     settings.cache = False
@@ -434,7 +438,10 @@ def benchmark(
             with console.status(f"{task.name} · {method}..."):
                 try:
                     outcome = run_task(task, method, settings, llm, checks_dir, model)
-                except LLMError as exc:
+                except ContextTooLongError as exc:  # this task is too big; the others may fit
+                    failed = Result(request=task.request, error=f"context too long: {exc}")
+                    outcome = Outcome(task, method, failed, False if task.check else None, 0.0)
+                except LLMError as exc:  # server down, unknown model: every task would fail
                     _fail(f"{task.name} · {method}: {exc}")
             ledger.record(outcome.result, method=method)
             mark = {None: "", True: " [green]check passed[/]", False: " [red]check failed[/]"}
@@ -443,6 +450,11 @@ def benchmark(
                 f"{task.name} · {method}: {status} · {format_usd(outcome.result.cost)}"
                 f"{mark[outcome.passed]}"
             )
+            if outcome.passed is False and outcome.result.ok:
+                for change in outcome.result.changes:
+                    console.print(change.diff, markup=False, highlight=False)
+                tail = "\n".join(outcome.check_output.splitlines()[-15:])
+                console.print(f"[dim]{tail}[/]" if tail else "[dim](check printed nothing)[/]")
             outcomes.append(outcome)
 
     report_md = markdown(outcomes)

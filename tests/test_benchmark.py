@@ -101,6 +101,13 @@ def test_wrong_change_fails_the_check(fake):
         task, "tokenwise", Settings(root=BENCH), fake('["cart.py"]', wrong), BENCH / "checks"
     )
     assert outcome.result.ok and outcome.passed is False
+    assert "Quantity must be positive" in outcome.check_output  # why it failed is kept
+    md = markdown([outcome])
+    assert (
+        "## Failures" in md
+        and "typo · tokenwise: check failed" in md
+        and '+            raise ValueError("bad")' in md
+    )
 
 
 def test_savings_and_markdown(fake):
@@ -182,3 +189,37 @@ def test_repo_task_uses_an_existing_clone(tmp_path):
     )
     (task,) = load_tasks(tasks_file)
     assert task.project == (clone / "pkg").resolve()
+
+
+def test_benchmark_continues_after_a_too_long_prompt(tmp_path, monkeypatch, fake):
+    from tokenwise.llm import ContextTooLongError
+
+    class SmallModel:
+        def __init__(self):
+            self.inner = fake('["cart.py"]', TYPO_EDIT)
+            self.calls = 0
+
+        def complete(self, **kw):
+            self.calls += 1
+            if self.calls == 1:
+                raise ContextTooLongError("needs 40,000 tokens; max_context is 32,768")
+            return self.inner.complete(**kw)
+
+    monkeypatch.setattr(cli, "make_llm", lambda s: SmallModel())
+    tasks = tmp_path / "tasks.toml"
+    project = (BENCH / "projects/shop").as_posix()
+    check = (
+        "{python} -m pytest -q -p no:cacheprovider " + (BENCH / "checks/test_typo.py").as_posix()
+    )
+    tasks.write_text(
+        f'[[task]]\nname = "big"\nproject = "{project}"\nrequest = "x"\ncheck = "{check}"\n'
+        f'[[task]]\nname = "small"\nproject = "{project}"\nrequest = "fix the typo"\ncheck = "{check}"\n'
+    )
+    result = CliRunner().invoke(cli.app, ["benchmark", str(tasks), "--methods", "tokenwise"])
+    assert result.exit_code == 0, result.output
+    assert "big · tokenwise: context too long" in result.output.replace("\n", " ")
+    assert "small · tokenwise: ok" in result.output
+    md = (tmp_path / "results.md").read_text()  # default: next to the tasks file
+    assert "| Checks passed |" not in md and "big · tokenwise: context too long" in md
+    shutil_dir = BENCH / "projects" / ".tokenwise"
+    assert not shutil_dir.exists()

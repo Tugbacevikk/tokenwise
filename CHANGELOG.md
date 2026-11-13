@@ -7,6 +7,11 @@ a change that breaks existing use bumps major.
 
 First release.
 
+- Check commands quote `{checks}` and `{python}`, so paths with spaces
+  (`C:\Users\ADIL CEVIK\...`) work on Windows.
+- `benchmark` shows the diff and check output of failed runs, writes them under
+  "Failures" in the results, saves results next to the tasks file by default, and keeps
+  going when one task's prompt does not fit the local model's context.
 - `provider = "ollama"` uses Ollama's own API and sizes the context window to each
   prompt (`max_context` caps it); its OpenAI endpoint silently cut long prompts.
   `init --local` now writes it.
