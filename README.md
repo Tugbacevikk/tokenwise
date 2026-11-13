@@ -196,6 +196,31 @@ Model ayarları `benchmark/` klasöründeki `tokenwise.toml`'dan okunur (yoksa v
 
 ### Sonuçlar
 
+#### Gerçek ölçüm: yerel modellerle, ücretsiz
+
+Kendi GitHub projelerimden 20 görev, bir Windows dizüstünde Ollama ile çalıştırıldı (RTX 3050 Ti 4 GB). Seçici `qwen2.5-coder:3b`, düzenleyici `qwen3.5:9b`. Her görevin kontrol betiği değişikliğin gerçekten çalışıp çalışmadığına karar veriyor.
+
+| Tur | O turda ne değişti | Geçen kontrol |
+| --- | --- | ---: |
+| 1 | Sadece `qwen2.5-coder:3b` | 3/20 |
+| 2 | `qwen3.5:9b` merdiveni; kodu bozan değişiklikleri yakalayan koruma; büyük projelerde harita kısaltma | 9/20 |
+| 3 | Ölçüm hataları giderildi (Windows konsol kodlaması, kurulu olmayan araçlar); istekte adı geçen fonksiyonun dosyasını bulma; uydurma yolları düzeltme | **15/18** |
+
+Her turda başarısız görevlerin değişikliklerine ve hata çıktılarına bakıldı. tokenwise'tan kaynaklanan her neden düzeltildi:
+
+- **Kodu bozan değişiklikler:** Bozuk girinti, silinip hâlâ kullanılan bir fonksiyon, başka modüllerin kullandığı bir değişkenin adını değiştirme.
+- **Bağlama sığmama:** Büyük projelerde harita ve 2.270 satırlık bir dosya modelin bağlamına sığmıyordu.
+- **Yanlış dosya:** İstekte adı geçmesine rağmen yanlış dosya seçildi.
+- **Uydurma yollar:** `core/isci_takip.py`, `path/to/predict.py`.
+
+3. turda kalan üç hata:
+- **Biri yakalanacak:** Fonksiyon dışına kayan bir `return`; artık koruma bunu yakalıyor.
+- **İkisi modelin isteği yanlış anlaması:** `upos` yerine `deprel`; `RAG_TOP_K` yerine `RAG_TOP_K_RESULTS`.
+
+İki görev atlandı, çünkü o bilgisayarda `php` ve `javac` kurulu değildi. Ayrıntılar [`benchmark/github/results-local-qwen.md`](benchmark/github/results-local-qwen.md) dosyasında.
+
+#### Tahmini maliyet karşılaştırması
+
 **Tahmini, model çağrılmadan.** Kendi GitHub projelerimden 20 gerçek görev üzerinde hesaplandı. Projeler 2 bin ile 370 bin token arasında; Python, JavaScript, PHP, Java ve Kotlin kodu içeriyor. Tablolar [`benchmark/github/estimate.md`](benchmark/github/estimate.md) dosyasında.
 
 | Toplam (20 görev) | Baseline | tokenwise | Değişim |
