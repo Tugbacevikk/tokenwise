@@ -10,6 +10,7 @@ command (for example its tests) decides whether the change works. The original n
 from __future__ import annotations
 
 import re
+import subprocess
 import tempfile
 import time
 import tomllib
@@ -49,18 +50,63 @@ class Outcome:
     seconds: float
 
 
+REPOS_DIR = ".repos"
+_REPO = re.compile(r"^[\w.-]+/[\w.-]+$")
+_SHA = re.compile(r"^[0-9a-f]{7,40}$")
+
+
+def fetch_repo(repo: str, ref: str, cache: Path) -> Path:
+    """Clones github.com/<repo> at commit `ref` into cache/<owner>__<name>__<ref>, once."""
+    if not _REPO.match(repo):
+        raise ValueError(f"repo must look like owner/name, got {repo!r}")
+    if not _SHA.match(ref):
+        raise ValueError(
+            f"ref must be a commit hash (so every run uses the same code), got {ref!r}"
+        )
+    target = cache / f"{repo.replace('/', '__')}__{ref[:12]}"
+    if (target / ".git").is_dir():
+        return target
+    target.mkdir(parents=True, exist_ok=True)
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", *args], cwd=target, check=True, capture_output=True, timeout=600)
+
+    try:
+        git("init", "-q")
+        git("fetch", "-q", "--depth", "1", f"https://github.com/{repo}", ref)
+        git("checkout", "-q", "FETCH_HEAD")
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        detail = getattr(exc, "stderr", b"") or b""
+        raise ValueError(
+            f"could not fetch {repo}@{ref}: {detail.decode(errors='replace')}"
+        ) from None
+    return target
+
+
 def load_tasks(path: Path) -> list[Task]:
-    """Reads [[task]] tables from a TOML file. `project` is relative to that file."""
+    """Reads [[task]] tables from a TOML file.
+
+    A task names its code either with `project` (a folder, relative to the file) or with
+    `repo` = "owner/name" plus `ref` = a commit hash, which is cloned into .repos/ next to
+    the file on first use. `subdir` picks a folder inside the repository.
+    """
     data = tomllib.loads(path.read_text("utf-8"))
     tasks = []
     for item in data.get("task", []):
-        missing = {"name", "project", "request"} - item.keys()
+        name = item.get("name", "?")
+        missing = {"name", "request"} - item.keys()
+        if "project" not in item and not {"repo", "ref"} <= item.keys():
+            missing.add("project (or repo and ref)")
         if missing:
-            raise ValueError(f"task {item.get('name', '?')}: missing {', '.join(sorted(missing))}")
-        project = (path.parent / item["project"]).resolve()
+            raise ValueError(f"task {name}: missing {', '.join(sorted(missing))}")
+        if "project" in item:
+            project = (path.parent / item["project"]).resolve()
+        else:
+            project = fetch_repo(item["repo"], item["ref"], path.parent / REPOS_DIR)
+            project = (project / item.get("subdir", ".")).resolve()
         if not project.is_dir():
-            raise ValueError(f"task {item['name']}: project folder {project} does not exist")
-        tasks.append(Task(item["name"], project, item["request"], item.get("check", "")))
+            raise ValueError(f"task {name}: project folder {project} does not exist")
+        tasks.append(Task(name, project, item["request"], item.get("check", "")))
     if not tasks:
         raise ValueError(f"{path}: no [[task]] entries")
     return tasks

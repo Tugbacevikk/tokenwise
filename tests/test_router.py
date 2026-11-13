@@ -33,3 +33,12 @@ def test_ladder_stretches_short_lists():
     assert ladder(("a", "b"), MEDIUM) == ["b"]
     with pytest.raises(ValueError):
         ladder((), EASY)
+
+
+def test_focused_big_file_counts_only_what_is_sent(project):
+    from tokenwise.router import MEDIUM, difficulty
+
+    funcs = "".join(f"def f{i}(x):\n    return x + {i}\n\n\n" for i in range(200))
+    (project / "huge.py").write_text("import os\n\n\n" + funcs)
+    assert difficulty("add a check", project, ["huge.py"]) == HARD  # whole file: 800 lines
+    assert difficulty("add a check", project, ["huge.py"], {"huge.py": ["f7"]}) == MEDIUM

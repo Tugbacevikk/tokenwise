@@ -117,7 +117,7 @@ def run(request: str, settings: Settings, llm: LLM, model: str = "") -> Result:
     if model:
         result.level, result.models = "forced", [model]
     else:
-        level = difficulty(request, settings.root, chosen)
+        level = difficulty(request, settings.root, chosen, focus)
         result.level, result.models = NAMES[level], ladder(settings.models, level)
 
     verify = make_verifier(settings, settings.check) if settings.check else None

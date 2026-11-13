@@ -7,6 +7,9 @@ a change that breaks existing use bumps major.
 
 First release.
 
+- Benchmark tasks can pin a GitHub repository at a commit (`repo`, `ref`, `subdir`);
+  `benchmark/github/` has 20 tasks from real projects with checks and an offline estimate.
+- The router sizes a focused file by the part that is sent, not the whole file.
 - `budget_usd_week`: refuse new requests once the last 7 days cost that much
   (`--over-budget` to override); shown after each request, in the report and in VS Code.
 - Map support for Java, Kotlin, C#, Go, Rust and PHP, and JS/TS class methods.

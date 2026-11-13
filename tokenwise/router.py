@@ -65,8 +65,12 @@ def _has(words: tuple[str, ...], text: str) -> bool:
     return any(re.search(rf"\b{re.escape(w)}\b", text) for w in words)
 
 
-def difficulty(request: str, root: Path, paths: list[str]) -> int:
-    """0 = easy, 1 = medium, 2 = hard. Rules only; no model call, no cost."""
+def difficulty(
+    request: str, root: Path, paths: list[str], focus: dict[str, list[str]] | None = None
+) -> int:
+    """0 = easy, 1 = medium, 2 = hard. Rules only; no model call, no cost.
+
+    Size counts the lines the editor will actually see: for a focused file, only its view."""
     text = request.lower()
     score = MEDIUM
     if _has(_HARD_WORDS, text):
@@ -74,11 +78,16 @@ def difficulty(request: str, root: Path, paths: list[str]) -> int:
     elif _has(_EASY_WORDS, text):
         score = EASY
 
+    from .focus import focused_view
+
     lines = 0
     for rel in paths:
         path = root / rel
-        if path.is_file():
-            lines += path.read_text("utf-8", errors="replace").count("\n")
+        if not path.is_file():
+            continue
+        source = path.read_text("utf-8", errors="replace")
+        view = focused_view(rel, source, focus[rel]) if focus and rel in focus else None
+        lines += (view or source).count("\n")
     if len(paths) >= 4 or lines > _BIG_CHANGE_LINES:
         score += 1
     return min(score, HARD)

@@ -1,0 +1,147 @@
+# 20 tasks from Tuğba's own GitHub projects. Run with:
+#     tokenwise benchmark benchmark/github/tasks.toml -o benchmark/github/results.md
+#
+# Each task pins its repository to a commit, so every run starts from the same code. The
+# repositories are cloned into benchmark/github/.repos/ on first use.
+# Each check script fails on the original code and passes once the request is done
+# (verified with the reference solutions in reference.toml).
+
+[[task]]
+name = "netprobe-chunk-size"
+repo = "Tugbacevikk/netprobe_donem_projesi"
+ref = "05b5e56c7f08908f65495286bb976b18374f8c4f"
+request = "split_file, chunk_size 0 ya da negatifse ValueError fırlatsın."
+check = "{python} {checks}/netprobe_chunk_size.py"
+
+[[task]]
+name = "netprobe-logger-with"
+repo = "Tugbacevikk/netprobe_donem_projesi"
+ref = "05b5e56c7f08908f65495286bb976b18374f8c4f"
+request = "TransferLogger 'with TransferLogger(...) as log:' şeklinde kullanılabilsin, bloktan çıkınca close() çağrılsın."
+check = "{python} {checks}/netprobe_logger_with.py"
+
+[[task]]
+name = "nlp-aux-vp"
+repo = "Tugbacevikk/nlp-chunking-turkish"
+ref = "ec91e5f64a41a2151c6f3a971e6fa33ba7f3191d"
+request = "convert_to_bio.py'de AUX etiketli kelimeler de VERB gibi VP olarak etiketlensin."
+check = "{python} {checks}/nlp_aux_vp.py"
+
+[[task]]
+name = "nlp-predict-main"
+repo = "Tugbacevikk/nlp-chunking-turkish"
+ref = "ec91e5f64a41a2151c6f3a971e6fa33ba7f3191d"
+request = "predict.py import edilince örnek cümleleri çalıştırmasın; o üç predict çağrısını if __name__ == '__main__' bloğuna al."
+check = "{python} {checks}/nlp_predict_main.py"
+
+[[task]]
+name = "rag-settings-env"
+repo = "Tugbacevikk/bursa-teknik-rag-projesi"
+ref = "cd7231475d72f8d78a04ae80d75f122ee51c8545"
+request = "config/settings.py'deki CHUNK_SIZE, CHUNK_OVERLAP ve TOP_K_RESULTS sırasıyla RAG_CHUNK_SIZE, RAG_CHUNK_OVERLAP ve RAG_TOP_K ortam değişkenleriyle değiştirilebilsin; yoksa mevcut değerler kalsın."
+check = "{python} {checks}/rag_settings_env.py"
+
+[[task]]
+name = "rag-widget-escape"
+repo = "Tugbacevikk/bursa-teknik-rag-projesi"
+ref = "cd7231475d72f8d78a04ae80d75f122ee51c8545"
+request = "static/widget.js: Escape tuşuna basılınca sohbet kutusu kapansın."
+check = "{python} {checks}/rag_widget_escape.py"
+
+[[task]]
+name = "istakip-password-length"
+repo = "Tugbacevikk/Is_Takip_Sistemi"
+ref = "b0e03b1df3a7597f24f36cb5f068799d9fabf964"
+request = "Kullanıcı eklerken (api_users_add) 8 karakterden kısa şifreler 400 hatasıyla reddedilsin."
+check = "{python} {checks}/istakip_password_length.py"
+
+[[task]]
+name = "istakip-atomic-config"
+repo = "Tugbacevikk/Is_Takip_Sistemi"
+ref = "b0e03b1df3a7597f24f36cb5f068799d9fabf964"
+request = "save_config önce geçici bir dosyaya yazsın, sonra os.replace ile config.yaml'ın yerine koysun; yazarken çökerse yarım dosya kalmasın."
+check = "{python} {checks}/istakip_atomic_config.py"
+
+[[task]]
+name = "gateway-breaker-validate"
+repo = "Tugbacevikk/sesli-asistan-gateway"
+ref = "bcdec4d6d97a8d65443fdb6730b09f8c4bfbeb15"
+request = "CircuitBreaker, failures 1'den küçükse ya da reset_s 0 veya negatifse ValueError fırlatsın."
+check = "{python} {checks}/gateway_breaker_validate.py"
+
+[[task]]
+name = "gateway-office-is-open"
+repo = "Tugbacevikk/sesli-asistan-gateway"
+ref = "bcdec4d6d97a8d65443fdb6730b09f8c4bfbeb15"
+request = "OfficeHours'a is_open(now) ekle: status(now) açık ise True döndürsün."
+check = "{python} {checks}/gateway_office_is_open.py"
+
+[[task]]
+name = "gateway-negative-words"
+repo = "Tugbacevikk/sesli-asistan-gateway"
+ref = "bcdec4d6d97a8d65443fdb6730b09f8c4bfbeb15"
+request = "number_to_words negatif sayıları 'eksi' ile okusun: -5 → 'eksi beş'."
+check = "{python} {checks}/gateway_negative_words.py"
+
+[[task]]
+name = "kelime-chunker-validate"
+repo = "Tugbacevikk/kelime-kelime"
+ref = "412374595e9ff58128f960fa80b3028b2523e523"
+request = "EnergyChunker'da min_len, max_len'den küçük değilse ValueError fırlatılsın."
+check = "{python} {checks}/kelime_chunker_validate.py"
+
+[[task]]
+name = "kelime-wer"
+repo = "Tugbacevikk/kelime-kelime"
+ref = "412374595e9ff58128f960fa80b3028b2523e523"
+request = "quality.py'ye word_error_rate(reference, hypothesis) ekle: kelime düzenleme mesafesi / referanstaki kelime sayısı; referans boşsa 0.0."
+check = "{python} {checks}/kelime_wer.py"
+
+[[task]]
+name = "iot-plant-profile"
+repo = "Tugbacevikk/IOT_simulationn"
+ref = "104093d60b5c79ac9a8bfbb6b53b5f099a5d7ee7"
+request = "subscriber.py'deki bitki profillerine domates ekle: nem_min 55, nem_max 75, sicaklik_max 30."
+check = "{python} {checks}/iot_plant_profile.py"
+
+[[task]]
+name = "staj-greedy-seed"
+repo = "Tugbacevikk/StajyerYerle-tirmeSim-lasyonu"
+ref = "e7626554c05adee104f06d3c3ace32644f36ba66"
+request = "greedy_ata isteğe bağlı bir seed parametresi alsın ve aynı seed ile aynı sonucu versin (global random yerine random.Random(seed) kullansın)."
+check = "{python} {checks}/staj_greedy_seed.py"
+
+[[task]]
+name = "su-server-traversal"
+repo = "Tugbacevikk/Akilli_Su_Asistanim"
+ref = "2b2be1d7c3f58ca1c53198dbbee26e2f3e5d49e3"
+request = "server.js'te '../' ile proje klasörünün dışındaki dosyalar okunabiliyor; klasör dışına çıkan isteklere 403 dönsün."
+check = "{python} {checks}/su_server_traversal.py"
+
+[[task]]
+name = "kargo-delete-owner"
+repo = "Tugbacevikk/cargo-management-system"
+ref = "850959da172988025edf4d13047e40239be2454a"
+request = "kargo_sil.php'deki DELETE sorgusu da sadece giriş yapan kullanıcının kargosunu silsin (kullanici_id koşulu)."
+check = "{python} {checks}/kargo_delete_owner.py"
+
+[[task]]
+name = "tuglang-else"
+repo = "Tugbacevikk/tuglang-programming-language"
+ref = "8f69c1ca151ae8a91af46a9047a3f3ed61870dc6"
+request = "TuglangLexer 'degilse' kelimesini de anahtar kelime olarak tanısın."
+check = "{python} {checks}/tuglang_else.py"
+
+[[task]]
+name = "mobil-health"
+repo = "Tugbacevikk/istakipmobil"
+ref = "dbefe36fcf8b5d75fede854846f5903301d63766"
+request = "app.py'ye GET /api/health ekle: {'ok': True, 'time': şu anki zaman} döndürsün."
+check = "{python} {checks}/mobil_health.py"
+
+[[task]]
+name = "alien-bullet-hit"
+repo = "Tugbacevikk/alien-escape-html5"
+ref = "1f0c99b3e21385d3824c1d2a9b55fb6c27783da6"
+request = "updateBullets'ta hata var: düşmana çarpan mermi kaybolmuyor, bazen de çarpmayan mermi siliniyor. Çarpan mermi silinsin, diğerleri devam etsin."
+check = "{python} {checks}/alien_bullet_hit.py"

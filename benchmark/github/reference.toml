@@ -1,0 +1,332 @@
+# Reference solutions used by estimate.py: what an ideal run of each method would exchange
+# with the model. `targets` is the selector's ideal answer; `edits` the editor's ideal answer.
+# Every edit is applied by tokenwise's own code and must make the task's check pass.
+
+[netprobe-chunk-size]
+targets = ["protocol.py"]
+edits = '''
+protocol.py
+<<<<<<< SEARCH
+    with open(filepath, "rb") as f:
+        data = f.read()
+    return [data[i:i + chunk_size] for i in range(0, len(data), chunk_size)]
+=======
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    with open(filepath, "rb") as f:
+        data = f.read()
+    return [data[i:i + chunk_size] for i in range(0, len(data), chunk_size)]
+>>>>>>> REPLACE
+'''
+
+[netprobe-logger-with]
+targets = ["logger.py"]
+edits = '''
+logger.py
+<<<<<<< SEARCH
+        print(f"[LOGGER] Log kapatıldı → {self.filepath}")
+        self._print_summary()
+=======
+        print(f"[LOGGER] Log kapatıldı → {self.filepath}")
+        self._print_summary()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+>>>>>>> REPLACE
+'''
+
+[nlp-aux-vp]
+targets = ["convert_to_bio.py"]
+edits = '''
+convert_to_bio.py
+<<<<<<< SEARCH
+    elif upos == 'VERB':
+=======
+    elif upos in ('VERB', 'AUX'):
+>>>>>>> REPLACE
+'''
+
+[nlp-predict-main]
+targets = ["predict.py"]
+edits = '''
+predict.py
+<<<<<<< SEARCH
+predict("Öğrenci kütüphanede kitap okudu .")
+predict("Güzel bir gün dışarıda yürüyüş yaptım .")
+predict("Hoca derste yeni bir konu anlattı .")
+=======
+if __name__ == "__main__":
+    predict("Öğrenci kütüphanede kitap okudu .")
+    predict("Güzel bir gün dışarıda yürüyüş yaptım .")
+    predict("Hoca derste yeni bir konu anlattı .")
+>>>>>>> REPLACE
+'''
+
+[rag-settings-env]
+targets = ["config/settings.py"]
+edits = '''
+config/settings.py
+<<<<<<< SEARCH
+CHUNK_SIZE = 500
+CHUNK_OVERLAP = 100
+TOP_K_RESULTS = 4
+=======
+CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "500"))
+CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "100"))
+TOP_K_RESULTS = int(os.getenv("RAG_TOP_K", "4"))
+>>>>>>> REPLACE
+'''
+
+[rag-widget-escape]
+targets = ["static/widget.js"]
+edits = '''
+static/widget.js
+<<<<<<< SEARCH
+    closeBtn.addEventListener('click', () => {
+=======
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            chatBox.style.display = 'none';
+        }
+    });
+
+    closeBtn.addEventListener('click', () => {
+>>>>>>> REPLACE
+'''
+
+[istakip-password-length]
+targets = ["web/app.py::api_users_add"]
+edits = '''
+web/app.py
+<<<<<<< SEARCH
+    if not username or not password or not fullname:
+        return jsonify({'success': False, 'message': 'Kullanıcı adı, ad soyad ve şifre gereklidir.'}), 400
+
+    try:
+=======
+    if not username or not password or not fullname:
+        return jsonify({'success': False, 'message': 'Kullanıcı adı, ad soyad ve şifre gereklidir.'}), 400
+    if len(password) < 8:
+        return jsonify({'success': False, 'message': 'Şifre en az 8 karakter olmalıdır.'}), 400
+
+    try:
+>>>>>>> REPLACE
+'''
+
+[istakip-atomic-config]
+targets = ["web/app.py::save_config"]
+edits = '''
+web/app.py
+<<<<<<< SEARCH
+    with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
+        yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False)
+=======
+    tmp_path = CONFIG_PATH.with_suffix('.tmp')
+    with open(tmp_path, 'w', encoding='utf-8') as f:
+        yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False)
+    os.replace(tmp_path, CONFIG_PATH)
+>>>>>>> REPLACE
+'''
+
+[gateway-breaker-validate]
+targets = ["src/sesli_asistan/gateway/core/resilience.py"]
+edits = '''
+src/sesli_asistan/gateway/core/resilience.py
+<<<<<<< SEARCH
+        self.name, self.threshold, self.reset_s, self.clock = name, failures, reset_s, clock
+=======
+        if failures < 1 or reset_s <= 0:
+            raise ValueError("failures must be >= 1 and reset_s > 0")
+        self.name, self.threshold, self.reset_s, self.clock = name, failures, reset_s, clock
+>>>>>>> REPLACE
+'''
+
+[gateway-office-is-open]
+targets = ["src/sesli_asistan/gateway/core/schedule.py"]
+edits = '''
+src/sesli_asistan/gateway/core/schedule.py
+<<<<<<< SEARCH
+    def status(self, now: datetime) -> str:
+=======
+    def is_open(self, now: datetime) -> bool:
+        return self.status(now) == OPEN
+
+    def status(self, now: datetime) -> str:
+>>>>>>> REPLACE
+'''
+
+[gateway-negative-words]
+targets = ["src/sesli_asistan/gateway/core/search.py::number_to_words"]
+edits = '''
+src/sesli_asistan/gateway/core/search.py
+<<<<<<< SEARCH
+    if not 0 < n < 1_000_000:
+        return str(n)
+=======
+    if n < 0:
+        return "eksi " + number_to_words(-n)
+    if not 0 < n < 1_000_000:
+        return str(n)
+>>>>>>> REPLACE
+'''
+
+[kelime-chunker-validate]
+targets = ["src/viet_asr/infrastructure/chunker.py"]
+edits = '''
+src/viet_asr/infrastructure/chunker.py
+<<<<<<< SEARCH
+        self.max_len, self.min_len, self.frame, self.silence_rms = max_len, min_len, frame, silence_rms
+=======
+        if min_len >= max_len:
+            raise ValueError("min_len must be smaller than max_len")
+        self.max_len, self.min_len, self.frame, self.silence_rms = max_len, min_len, frame, silence_rms
+>>>>>>> REPLACE
+'''
+
+[kelime-wer]
+targets = ["src/viet_asr/application/quality.py"]
+edits = '''
+src/viet_asr/application/quality.py
+<<<<<<< SEARCH
+def week_of(dt) -> str:
+=======
+def word_error_rate(reference: str, hypothesis: str) -> float:
+    """Kelime hata oranı: düzenleme mesafesi / referanstaki kelime sayısı (boş referans: 0)."""
+    ref = words(reference)
+    return edit_distance(ref, words(hypothesis)) / len(ref) if ref else 0.0
+
+
+def week_of(dt) -> str:
+>>>>>>> REPLACE
+'''
+
+[iot-plant-profile]
+targets = ["subscriber.py::yz_karar_ver"]
+edits = '''
+subscriber.py
+<<<<<<< SEARCH
+    "fesleğen": {"nem_min": 40, "nem_max": 65, "sicaklik_max": 32},
+}
+=======
+    "fesleğen": {"nem_min": 40, "nem_max": 65, "sicaklik_max": 32},
+    "domates":  {"nem_min": 55, "nem_max": 75, "sicaklik_max": 30},
+}
+>>>>>>> REPLACE
+'''
+
+[staj-greedy-seed]
+targets = ["greedy.py"]
+edits = '''
+greedy.py
+<<<<<<< SEARCH
+def greedy_ata(ogrenciler_master, firmalar_master, red_orani):
+    start = time.perf_counter()
+=======
+def greedy_ata(ogrenciler_master, firmalar_master, red_orani, seed=None):
+    start = time.perf_counter()
+    rng = random.Random(seed)
+>>>>>>> REPLACE
+greedy.py
+<<<<<<< SEARCH
+                    s = random.choice(boslar); ogr['yerlestigi_firma'] = s
+=======
+                    s = rng.choice(boslar); ogr['yerlestigi_firma'] = s
+>>>>>>> REPLACE
+greedy.py
+<<<<<<< SEARCH
+                if random.random() < red_orani:
+=======
+                if rng.random() < red_orani:
+>>>>>>> REPLACE
+'''
+
+[su-server-traversal]
+targets = ["server.js"]
+edits = '''
+server.js
+<<<<<<< SEARCH
+    let filePath = path.join(PUBLIC_DIR, req.url === '/' ? 'index.html' : req.url);
+=======
+    let filePath = path.join(PUBLIC_DIR, req.url === '/' ? 'index.html' : req.url);
+    if (!filePath.startsWith(PUBLIC_DIR + path.sep)) {
+        res.writeHead(403);
+        res.end('Forbidden');
+        return;
+    }
+>>>>>>> REPLACE
+'''
+
+[kargo-delete-owner]
+targets = ["kargo_sil.php"]
+edits = '''
+kargo_sil.php
+<<<<<<< SEARCH
+        $sil = $baglanti->prepare("DELETE FROM kargolar WHERE id = ?");
+        $sil->bind_param("i", $kargo_id);
+=======
+        $sil = $baglanti->prepare("DELETE FROM kargolar WHERE id = ? AND kullanici_id = ?");
+        $sil->bind_param("ii", $kargo_id, $kullanici_id);
+>>>>>>> REPLACE
+'''
+
+[tuglang-else]
+targets = ["TuglangLexer.java"]
+edits = '''
+TuglangLexer.java
+<<<<<<< SEARCH
+        Pattern.compile("^(belirle|yaz|eger|dongu)"),     // ANAHTAR_KELIME
+=======
+        Pattern.compile("^(belirle|yaz|eger|degilse|dongu)"),     // ANAHTAR_KELIME
+>>>>>>> REPLACE
+'''
+
+[mobil-health]
+targets = ["app.py"]
+edits = '''
+app.py
+<<<<<<< SEARCH
+@app.route('/api/status', methods=['GET'])
+def get_status():
+    return jsonify(system_state)
+=======
+@app.route('/api/status', methods=['GET'])
+def get_status():
+    return jsonify(system_state)
+
+@app.route('/api/health', methods=['GET'])
+def health():
+    return jsonify({"ok": True, "time": datetime.datetime.now().isoformat(timespec="seconds")})
+>>>>>>> REPLACE
+'''
+
+[alien-bullet-hit]
+targets = ["js/game.js::updateBullets"]
+edits = '''
+js/game.js
+<<<<<<< SEARCH
+    for (let j = 0; j < enemies.length; j++) {
+      if (isColliding(bullet, enemies[j])) {
+        silinecekDusmanlar.add(j);
+        score += 100;
+        playCollisionSound();
+        break;
+      }
+    }
+    if (!silinecekDusmanlar.has(bullets.indexOf(bullet))) yeniMermiler.push(bullet);
+=======
+    let vurdu = false;
+    for (let j = 0; j < enemies.length; j++) {
+      if (isColliding(bullet, enemies[j])) {
+        silinecekDusmanlar.add(j);
+        score += 100;
+        playCollisionSound();
+        vurdu = true;
+        break;
+      }
+    }
+    if (!vurdu) yeniMermiler.push(bullet);
+>>>>>>> REPLACE
+'''

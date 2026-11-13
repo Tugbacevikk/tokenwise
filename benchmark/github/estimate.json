@@ -1,0 +1,742 @@
+[
+ {
+  "task": "netprobe-chunk-size",
+  "files": 8,
+  "project_tokens": 10731,
+  "fails_before": true,
+  "tokenwise": {
+   "calls": [
+    {
+     "model": "claude-haiku-5-5",
+     "input": 609,
+     "output": 3
+    },
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 1339,
+     "output": 101
+    }
+   ],
+   "difficulty": "medium",
+   "model": "claude-sonnet-5-5",
+   "lines": 2,
+   "passes": true,
+   "focused": false
+  },
+  "baseline": {
+   "calls": [
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 10759,
+     "output": 1075
+    }
+   ],
+   "model": "claude-sonnet-5-5",
+   "lines": 3,
+   "passes": true
+  }
+ },
+ {
+  "task": "netprobe-logger-with",
+  "files": 8,
+  "project_tokens": 10731,
+  "fails_before": true,
+  "tokenwise": {
+   "calls": [
+    {
+     "model": "claude-haiku-5-5",
+     "input": 621,
+     "output": 3
+    },
+    {
+     "model": "claude-haiku-5-5",
+     "input": 1800,
+     "output": 81
+    }
+   ],
+   "difficulty": "easy",
+   "model": "claude-haiku-5-5",
+   "lines": 6,
+   "passes": true,
+   "focused": false
+  },
+  "baseline": {
+   "calls": [
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 10771,
+     "output": 1529
+    }
+   ],
+   "model": "claude-sonnet-5-5",
+   "lines": 7,
+   "passes": true
+  }
+ },
+ {
+  "task": "nlp-aux-vp",
+  "files": 9,
+  "project_tokens": 7849,
+  "fails_before": true,
+  "tokenwise": {
+   "calls": [
+    {
+     "model": "claude-haiku-5-5",
+     "input": 482,
+     "output": 5
+    },
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 1022,
+     "output": 29
+    }
+   ],
+   "difficulty": "medium",
+   "model": "claude-sonnet-5-5",
+   "lines": 2,
+   "passes": true,
+   "focused": false
+  },
+  "baseline": {
+   "calls": [
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 7774,
+     "output": 722
+    }
+   ],
+   "model": "claude-sonnet-5-5",
+   "lines": 3,
+   "passes": true
+  }
+ },
+ {
+  "task": "nlp-predict-main",
+  "files": 9,
+  "project_tokens": 7849,
+  "fails_before": true,
+  "tokenwise": {
+   "calls": [
+    {
+     "model": "claude-haiku-5-5",
+     "input": 491,
+     "output": 3
+    },
+    {
+     "model": "claude-haiku-5-5",
+     "input": 876,
+     "output": 93
+    }
+   ],
+   "difficulty": "easy",
+   "model": "claude-haiku-5-5",
+   "lines": 6,
+   "passes": true,
+   "focused": false
+  },
+  "baseline": {
+   "calls": [
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 7783,
+     "output": 572
+    }
+   ],
+   "model": "claude-sonnet-5-5",
+   "lines": 6,
+   "passes": true
+  }
+ },
+ {
+  "task": "rag-settings-env",
+  "files": 26,
+  "project_tokens": 17421,
+  "fails_before": true,
+  "tokenwise": {
+   "calls": [
+    {
+     "model": "claude-haiku-5-5",
+     "input": 838,
+     "output": 5
+    },
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 592,
+     "output": 68
+    }
+   ],
+   "difficulty": "medium",
+   "model": "claude-sonnet-5-5",
+   "lines": 6,
+   "passes": true,
+   "focused": false
+  },
+  "baseline": {
+   "calls": [
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 17398,
+     "output": 185
+    }
+   ],
+   "model": "claude-sonnet-5-5",
+   "lines": 6,
+   "passes": true
+  }
+ },
+ {
+  "task": "rag-widget-escape",
+  "files": 26,
+  "project_tokens": 17421,
+  "fails_before": true,
+  "tokenwise": {
+   "calls": [
+    {
+     "model": "claude-haiku-5-5",
+     "input": 806,
+     "output": 5
+    },
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 1746,
+     "output": 74
+    }
+   ],
+   "difficulty": "medium",
+   "model": "claude-sonnet-5-5",
+   "lines": 6,
+   "passes": true,
+   "focused": false
+  },
+  "baseline": {
+   "calls": [
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 17365,
+     "output": 1382
+    }
+   ],
+   "model": "claude-sonnet-5-5",
+   "lines": 6,
+   "passes": true
+  }
+ },
+ {
+  "task": "istakip-password-length",
+  "files": 16,
+  "project_tokens": 54012,
+  "fails_before": true,
+  "tokenwise": {
+   "calls": [
+    {
+     "model": "claude-haiku-5-5",
+     "input": 1545,
+     "output": 7
+    },
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 1602,
+     "output": 128
+    }
+   ],
+   "difficulty": "medium",
+   "model": "claude-sonnet-5-5",
+   "lines": 2,
+   "passes": true,
+   "focused": true
+  },
+  "baseline": {
+   "calls": [
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 53799,
+     "output": 22930
+    }
+   ],
+   "model": "claude-sonnet-5-5",
+   "lines": 3,
+   "passes": true
+  }
+ },
+ {
+  "task": "istakip-atomic-config",
+  "files": 16,
+  "project_tokens": 54012,
+  "fails_before": true,
+  "tokenwise": {
+   "calls": [
+    {
+     "model": "claude-haiku-5-5",
+     "input": 1556,
+     "output": 6
+    },
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 1258,
+     "output": 97
+    }
+   ],
+   "difficulty": "medium",
+   "model": "claude-sonnet-5-5",
+   "lines": 4,
+   "passes": true,
+   "focused": true
+  },
+  "baseline": {
+   "calls": [
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 53810,
+     "output": 22920
+    }
+   ],
+   "model": "claude-sonnet-5-5",
+   "lines": 5,
+   "passes": true
+  }
+ },
+ {
+  "task": "gateway-breaker-validate",
+  "files": 208,
+  "project_tokens": 371327,
+  "fails_before": true,
+  "tokenwise": {
+   "calls": [
+    {
+     "model": "claude-haiku-5-5",
+     "input": 30816,
+     "output": 12
+    },
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 3730,
+     "output": 95
+    }
+   ],
+   "difficulty": "medium",
+   "model": "claude-sonnet-5-5",
+   "lines": 2,
+   "passes": true,
+   "focused": false
+  },
+  "baseline": {
+   "calls": [
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 365910,
+     "output": 1576
+    }
+   ],
+   "model": "claude-sonnet-5-5",
+   "lines": 2,
+   "passes": true
+  }
+ },
+ {
+  "task": "gateway-office-is-open",
+  "files": 208,
+  "project_tokens": 371327,
+  "fails_before": true,
+  "tokenwise": {
+   "calls": [
+    {
+     "model": "claude-haiku-5-5",
+     "input": 30811,
+     "output": 11
+    },
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 3970,
+     "output": 64
+    }
+   ],
+   "difficulty": "medium",
+   "model": "claude-sonnet-5-5",
+   "lines": 3,
+   "passes": true,
+   "focused": false
+  },
+  "baseline": {
+   "calls": [
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 365904,
+     "output": 1816
+    }
+   ],
+   "model": "claude-sonnet-5-5",
+   "lines": 3,
+   "passes": true
+  }
+ },
+ {
+  "task": "gateway-negative-words",
+  "files": 208,
+  "project_tokens": 371327,
+  "fails_before": true,
+  "tokenwise": {
+   "calls": [
+    {
+     "model": "claude-haiku-5-5",
+     "input": 30811,
+     "output": 15
+    },
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 3294,
+     "output": 60
+    }
+   ],
+   "difficulty": "medium",
+   "model": "claude-sonnet-5-5",
+   "lines": 2,
+   "passes": true,
+   "focused": true
+  },
+  "baseline": {
+   "calls": [
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 365904,
+     "output": 6349
+    }
+   ],
+   "model": "claude-sonnet-5-5",
+   "lines": 2,
+   "passes": true
+  }
+ },
+ {
+  "task": "kelime-chunker-validate",
+  "files": 145,
+  "project_tokens": 227401,
+  "fails_before": true,
+  "tokenwise": {
+   "calls": [
+    {
+     "model": "claude-haiku-5-5",
+     "input": 17804,
+     "output": 10
+    },
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 2413,
+     "output": 96
+    }
+   ],
+   "difficulty": "medium",
+   "model": "claude-sonnet-5-5",
+   "lines": 2,
+   "passes": true,
+   "focused": false
+  },
+  "baseline": {
+   "calls": [
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 225362,
+     "output": 848
+    }
+   ],
+   "model": "claude-sonnet-5-5",
+   "lines": 2,
+   "passes": true
+  }
+ },
+ {
+  "task": "kelime-wer",
+  "files": 145,
+  "project_tokens": 227401,
+  "fails_before": true,
+  "tokenwise": {
+   "calls": [
+    {
+     "model": "claude-haiku-5-5",
+     "input": 17819,
+     "output": 9
+    },
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 2390,
+     "output": 96
+    }
+   ],
+   "difficulty": "medium",
+   "model": "claude-sonnet-5-5",
+   "lines": 6,
+   "passes": true,
+   "focused": false
+  },
+  "baseline": {
+   "calls": [
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 225377,
+     "output": 852
+    }
+   ],
+   "model": "claude-sonnet-5-5",
+   "lines": 6,
+   "passes": true
+  }
+ },
+ {
+  "task": "iot-plant-profile",
+  "files": 4,
+  "project_tokens": 8979,
+  "fails_before": true,
+  "tokenwise": {
+   "calls": [
+    {
+     "model": "claude-haiku-5-5",
+     "input": 440,
+     "output": 7
+    },
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 1300,
+     "output": 65
+    }
+   ],
+   "difficulty": "medium",
+   "model": "claude-sonnet-5-5",
+   "lines": 1,
+   "passes": true,
+   "focused": true
+  },
+  "baseline": {
+   "calls": [
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 7975,
+     "output": 2711
+    }
+   ],
+   "model": "claude-sonnet-5-5",
+   "lines": 1,
+   "passes": true
+  }
+ },
+ {
+  "task": "staj-greedy-seed",
+  "files": 5,
+  "project_tokens": 8709,
+  "fails_before": true,
+  "tokenwise": {
+   "calls": [
+    {
+     "model": "claude-haiku-5-5",
+     "input": 419,
+     "output": 3
+    },
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 715,
+     "output": 154
+    }
+   ],
+   "difficulty": "medium",
+   "model": "claude-sonnet-5-5",
+   "lines": 7,
+   "passes": true,
+   "focused": false
+  },
+  "baseline": {
+   "calls": [
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 8448,
+     "output": 431
+    }
+   ],
+   "model": "claude-sonnet-5-5",
+   "lines": 8,
+   "passes": true
+  }
+ },
+ {
+  "task": "su-server-traversal",
+  "files": 3,
+  "project_tokens": 4513,
+  "fails_before": true,
+  "tokenwise": {
+   "calls": [
+    {
+     "model": "claude-haiku-5-5",
+     "input": 290,
+     "output": 3
+    },
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 698,
+     "output": 88
+    }
+   ],
+   "difficulty": "medium",
+   "model": "claude-sonnet-5-5",
+   "lines": 5,
+   "passes": true,
+   "focused": false
+  },
+  "baseline": {
+   "calls": [
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 4569,
+     "output": 456
+    }
+   ],
+   "model": "claude-sonnet-5-5",
+   "lines": 5,
+   "passes": true
+  }
+ },
+ {
+  "task": "kargo-delete-owner",
+  "files": 13,
+  "project_tokens": 6328,
+  "fails_before": true,
+  "tokenwise": {
+   "calls": [
+    {
+     "model": "claude-haiku-5-5",
+     "input": 221,
+     "output": 4
+    },
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 521,
+     "output": 79
+    }
+   ],
+   "difficulty": "medium",
+   "model": "claude-sonnet-5-5",
+   "lines": 4,
+   "passes": true,
+   "focused": false
+  },
+  "baseline": {
+   "calls": [
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 6275,
+     "output": 211
+    }
+   ],
+   "model": "claude-sonnet-5-5",
+   "lines": 4,
+   "passes": true
+  }
+ },
+ {
+  "task": "tuglang-else",
+  "files": 3,
+  "project_tokens": 2929,
+  "fails_before": true,
+  "tokenwise": {
+   "calls": [
+    {
+     "model": "claude-haiku-5-5",
+     "input": 339,
+     "output": 5
+    },
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 997,
+     "output": 54
+    }
+   ],
+   "difficulty": "medium",
+   "model": "claude-sonnet-5-5",
+   "lines": 2,
+   "passes": true,
+   "focused": false
+  },
+  "baseline": {
+   "calls": [
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 2927,
+     "output": 731
+    }
+   ],
+   "model": "claude-sonnet-5-5",
+   "lines": 2,
+   "passes": true
+  }
+ },
+ {
+  "task": "mobil-health",
+  "files": 4,
+  "project_tokens": 2041,
+  "fails_before": true,
+  "tokenwise": {
+   "calls": [
+    {
+     "model": "claude-haiku-5-5",
+     "input": 312,
+     "output": 2
+    },
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 1042,
+     "output": 97
+    }
+   ],
+   "difficulty": "medium",
+   "model": "claude-sonnet-5-5",
+   "lines": 4,
+   "passes": true,
+   "focused": false
+  },
+  "baseline": {
+   "calls": [
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 2159,
+     "output": 783
+    }
+   ],
+   "model": "claude-sonnet-5-5",
+   "lines": 4,
+   "passes": true
+  }
+ },
+ {
+  "task": "alien-bullet-hit",
+  "files": 1,
+  "project_tokens": 2845,
+  "fails_before": true,
+  "tokenwise": {
+   "calls": [
+    {
+     "model": "claude-haiku-5-5",
+     "input": 282,
+     "output": 7
+    },
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 548,
+     "output": 159
+    }
+   ],
+   "difficulty": "medium",
+   "model": "claude-sonnet-5-5",
+   "lines": 4,
+   "passes": true,
+   "focused": true
+  },
+  "baseline": {
+   "calls": [
+    {
+     "model": "claude-sonnet-5-5",
+     "input": 2844,
+     "output": 2758
+    }
+   ],
+   "model": "claude-sonnet-5-5",
+   "lines": 4,
+   "passes": true
+  }
+ }
+]

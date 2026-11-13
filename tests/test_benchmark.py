@@ -40,7 +40,7 @@ def test_sample_tasks_load():
 def test_load_tasks_errors(tmp_path):
     bad = tmp_path / "t.toml"
     bad.write_text('[[task]]\nname = "x"\n')
-    with pytest.raises(ValueError, match="missing project, request"):
+    with pytest.raises(ValueError, match=r"missing project \(or repo and ref\), request"):
         load_tasks(bad)
     bad.write_text('[[task]]\nname = "x"\nproject = "nope"\nrequest = "r"\n')
     with pytest.raises(ValueError, match="does not exist"):
@@ -155,3 +155,30 @@ def test_benchmark_command(tmp_path, monkeypatch, fake):
 def test_benchmark_rejects_unknown_method():
     result = CliRunner().invoke(cli.app, ["benchmark", str(BENCH / "tasks.toml"), "--methods", "x"])
     assert result.exit_code == 1 and "--methods" in result.output
+
+
+def test_repo_tasks_validate_before_fetching(tmp_path):
+    bad = tmp_path / "t.toml"
+    bad.write_text('[[task]]\nname = "x"\nrepo = "not a repo"\nref = "abc1234"\nrequest = "r"\n')
+    with pytest.raises(ValueError, match="owner/name"):
+        load_tasks(bad)
+    bad.write_text('[[task]]\nname = "x"\nrepo = "a/b"\nref = "main"\nrequest = "r"\n')
+    with pytest.raises(ValueError, match="commit hash"):
+        load_tasks(bad)
+    bad.write_text('[[task]]\nname = "x"\nrepo = "a/b"\nrequest = "r"\n')
+    with pytest.raises(ValueError, match="repo and ref"):
+        load_tasks(bad)
+
+
+def test_repo_task_uses_an_existing_clone(tmp_path):
+    from tokenwise.benchmark import REPOS_DIR
+
+    clone = tmp_path / REPOS_DIR / "owner__name__0123456789ab"
+    (clone / ".git").mkdir(parents=True)
+    (clone / "pkg").mkdir()
+    tasks_file = tmp_path / "t.toml"
+    tasks_file.write_text(
+        '[[task]]\nname = "x"\nrepo = "owner/name"\nref = "0123456789abcdef"\nsubdir = "pkg"\nrequest = "r"\n'
+    )
+    (task,) = load_tasks(tasks_file)
+    assert task.project == (clone / "pkg").resolve()

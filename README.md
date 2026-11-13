@@ -166,7 +166,7 @@ tokenwise benchmark --methods tokenwise      # sadece bir yöntem
 tokenwise benchmark -m qwen2.5-coder:7b      # iki yöntem için de aynı model
 ```
 
-`benchmark/` klasöründe örnek bir proje (`projects/shop`) ve 5 görev var; her görevin kontrolü değişiklikten önce başarısız olur. Anlamlı sonuç için bunları kendi projelerinden ~20 gerçek görevle değiştir. Görev biçimi:
+Görev kodu bir klasörden (`project = "..."`) ya da GitHub'dan sabit bir commit'ten (`repo = "sahip/ad"`, `ref = "<commit>"`, isteğe bağlı `subdir`) gelebilir; GitHub projeleri ilk kullanımda `.repos/` altına indirilir. `benchmark/` klasöründe örnek bir proje (`projects/shop`) ve 5 görev var; her görevin kontrolü değişiklikten önce başarısız olur. Anlamlı sonuç için bunları kendi projelerinden ~20 gerçek görevle değiştir. Görev biçimi:
 
 ```toml
 [[task]]
@@ -180,7 +180,32 @@ Model ayarları `benchmark/` klasöründeki `tokenwise.toml`'dan okunur (yoksa v
 
 ### Sonuçlar
 
-*Henüz ölçülmedi.* `tokenwise benchmark` çalıştırıldıktan sonra `benchmark/results.md`'deki özet tablo buraya konacak.
+**Tahmini, model çağrılmadan.** Kendi GitHub projelerimden 20 gerçek görev üzerinde hesaplandı. Projeler 2 bin ile 370 bin token arasında; Python, JavaScript, PHP, Java ve Kotlin kodu içeriyor. Tablolar [`benchmark/github/estimate.md`](benchmark/github/estimate.md) dosyasında.
+
+| Toplam (20 görev) | Baseline | tokenwise | Değişim |
+| --- | ---: | ---: | ---: |
+| Giriş tokeni | 1.763.113 | 169.165 | −90% |
+| Çıkış tokeni | 70.837 | 1.903 | −97% |
+| Maliyet ($) | 4,23 | 0,09 | −98% |
+
+Nasıl hesaplandı:
+- İki yöntem de tokenwise'ın gerçek kodundan geçti: harita, seçici istemi, yönlendirici, odaklı görünüm, edit ayrıştırma ve baseline istemi.
+- Model yerine her görevin elle yazılmış referans cevabı kullanıldı ([`reference.toml`](benchmark/github/reference.toml)): doğru dosya seçimi ve en küçük doğru değişiklik.
+- Her görevin kontrol betiği orijinal kodda **başarısız**, iki yöntemin değişikliğinden sonra **başarılı** oldu.
+- Token sayısı karakter / 4 olarak tahmin edildi, iki yöntem için aynı şekilde.
+
+Neyi göstermiyor:
+- Gerçek bir modelin ne sıklıkla ilk seferde doğru yaptığını ya da kaç tekrar gerektiğini.
+- Modelin gerçekte ne kadar uzun yazdığını.
+- Prompt caching etkisini. Aynı projeye art arda istekte her iki yöntem de önbellekten yararlanır.
+
+Büyük projelerde (`sesli-asistan-gateway`, `kelime-kelime`) baseline tek istekte 225–366 bin token gönderiyor; bu, bağlam sınırı ve fiyat kademesi yüzünden pratikte zor. tokenwise'ın girişinin çoğu ise ucuz modelin okuduğu proje haritası.
+
+Gerçek modelle ölçmek için (projeler sabit commit'lerinden otomatik indirilir):
+
+```powershell
+tokenwise benchmark benchmark/github/tasks.toml -o benchmark/github/results.md
+```
 
 ## Neden "edit blokları"?
 
