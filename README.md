@@ -117,6 +117,16 @@ check = "{python} -m pytest -q -x"     # {python} = tokenwise'ı çalıştıran 
 
 Kontrol geçmezse komutun çıktısı (son 3000 karakter) modele geri gönderilir ve düzeltmesi istenir; o model iki denemede beceremezse merdivende bir üst modele geçilir. Hiçbiri geçemezse son değişiklik ve hata çıktısı gösterilir, dosyaya yazılmaz; yine de istersen `tokenwise apply` ile uygulayabilirsin. Asıl proje kontrol sırasında hiç değişmez.
 
+### Otomatik korumalar
+
+Her değişiklik, sana gösterilmeden önce test gerekmeden yakalanabilen hatalara karşı denetlenir. Sorun bulunursa model düzeltmesi için tekrar çalıştırılır:
+
+- Python dosyası geçersiz hâle geldi mi (sözdizimi ya da girinti hatası)?
+- Silinen bir fonksiyon, sınıf ya da değişken aynı dosyada hâlâ kullanılıyor mu?
+- Yeniden adlandırılan ya da silinen bir ad başka bir modülde hâlâ kullanılıyor mu?
+
+Bu üç kontrol, küçük bir yerel modelle (`qwen2.5-coder:3b`) yapılan ilk gerçek denemede görülen hatalardan çıkarıldı.
+
 ### Haftalık bütçe
 
 ```toml
@@ -190,9 +200,9 @@ Model ayarları `benchmark/` klasöründeki `tokenwise.toml`'dan okunur (yoksa v
 
 | Toplam (20 görev) | Baseline | tokenwise | Değişim |
 | --- | ---: | ---: | ---: |
-| Giriş tokeni | 1.763.113 | 169.165 | −90% |
+| Giriş tokeni | 1.763.113 | 91.557 | −95% |
 | Çıkış tokeni | 70.837 | 1.903 | −97% |
-| Maliyet ($) | 4,23 | 0,09 | −98% |
+| Maliyet ($) | 4,23 | 0,08 | −98% |
 
 Nasıl hesaplandı:
 - İki yöntem de tokenwise'ın gerçek kodundan geçti: harita, seçici istemi, yönlendirici, odaklı görünüm, edit ayrıştırma ve baseline istemi.
@@ -205,7 +215,7 @@ Neyi göstermiyor:
 - Modelin gerçekte ne kadar uzun yazdığını.
 - Prompt caching etkisini. Aynı projeye art arda istekte her iki yöntem de önbellekten yararlanır.
 
-Büyük projelerde (`sesli-asistan-gateway`, `kelime-kelime`) baseline tek istekte 225–366 bin token gönderiyor; bu, bağlam sınırı ve fiyat kademesi yüzünden pratikte zor. tokenwise'ın girişinin çoğu ise ucuz modelin okuduğu proje haritası.
+Büyük projelerde (`sesli-asistan-gateway`, `kelime-kelime`) baseline tek istekte 225–366 bin token gönderiyor; bu, bağlam sınırı ve fiyat kademesi yüzünden pratikte zor. tokenwise'ın girişinin çoğu ise ucuz modelin okuduğu proje haritası; harita `map_max_tokens` bütçesine sığacak şekilde kısaltılır (önce testler, sonra ayrıntılar).
 
 Gerçek modelle ölçmek için (projeler sabit commit'lerinden otomatik indirilir):
 

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .config import Settings
 from .focus import focused_view
+from .guard import problems as guard_problems
 from .llm import LLM, Reply
 from .prompts import EDITOR_SYSTEM
 from .selector import is_safe_path, normalize_path
@@ -284,6 +285,7 @@ def propose(
     focus = dict(focus or {})
     replies: list[Reply] = []
     feedback = ""
+    last_problem = ""
     last: Proposal | None = None
     for model in models:
         attempts = 0
@@ -312,14 +314,26 @@ def propose(
             attempts += 1
             edits = parse_edits(reply.text, paths[0] if len(paths) == 1 else None)
             if not edits:
+                last_problem = "the reply had no edit blocks"
                 feedback = "Your reply had no valid edit blocks. Reply only with edit blocks."
                 continue
             try:
                 changes = plan_changes(settings.root, edits)
             except EditError as exc:
+                last_problem = str(exc)
                 feedback = (
                     f"Your previous edit could not be applied: {exc}. "
                     "Copy the SEARCH lines exactly from the files above."
+                )
+                continue
+            found = guard_problems(settings.root, changes, all_files)
+            if found:
+                last_problem = "; ".join(found)
+                feedback = (
+                    "Your previous change applied, but it breaks the code:\n- "
+                    + "\n- ".join(found)
+                    + "\nWrite a corrected change. "
+                    "SEARCH must still match the ORIGINAL files above."
                 )
                 continue
             proposal = Proposal(changes, replies, paths, model=model)
@@ -340,7 +354,8 @@ def propose(
         last.replies = replies
         last.error = f"the check still fails after trying {tried}"
         return last
-    return Proposal([], replies, paths, error=f"no applicable edit from {tried}")
+    detail = f"; last problem: {last_problem}" if last_problem else ""
+    return Proposal([], replies, paths, error=f"no applicable edit from {tried}{detail}")
 
 
 def apply_changes(settings: Settings, changes: list[Change]) -> None:

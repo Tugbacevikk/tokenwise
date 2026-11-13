@@ -7,6 +7,12 @@ a change that breaks existing use bumps major.
 
 First release.
 
+- Guard: a change that leaves a Python file unparsable, or removes a name the file or
+  another module still uses, goes back to the model as a failed attempt.
+- `map_max_tokens`: large projects get a shorter map (tests as paths, then names only,
+  then top-level names, then paths); 8000 for local models, 16000 otherwise.
+- Failed runs report their last problem and, in benchmark results, the model's last reply.
+- `<think>` blocks from reasoning models are removed before parsing.
 - Check commands quote `{checks}` and `{python}`, so paths with spaces
   (`C:\Users\ADIL CEVIK\...`) work on Windows.
 - `benchmark` shows the diff and check output of failed runs, writes them under

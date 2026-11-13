@@ -21,7 +21,7 @@ from .ledger import Ledger, ledger_path
 from .llm import LLM, CachedLLM, ConfigError, ContextTooLongError, LLMError, cache_path
 from .pipeline import Result, run
 from .pricing import format_usd, reply_cost
-from .repo_map import build_map, estimate_tokens, list_source_files, source_tokens
+from .repo_map import estimate_tokens, fit_map, list_source_files, source_tokens
 from .textio import read_source
 
 app = typer.Typer(
@@ -108,14 +108,15 @@ def map_cmd(
     """Show the project map and how much smaller it is than the full source."""
     settings = load_settings(root)
     files = list_source_files(settings)
-    repo_map = build_map(settings, files)
+    repo_map, level = fit_map(settings, files)
     if show:
         console.print(repo_map, markup=False, highlight=False)
     full, small = source_tokens(settings, files), estimate_tokens(repo_map)
     ratio = f" ({100 * small / full:.1f}%)" if full else ""
+    shortened = f" · shortened to fit map_max_tokens: {level}" if level != "full" else ""
     console.print(
         f"\n[bold]{len(files)}[/] files · full source ≈ {full:,} tokens · "
-        f"map ≈ {small:,} tokens{ratio}"
+        f"map ≈ {small:,} tokens{ratio}{shortened}"
     )
 
 
@@ -486,8 +487,9 @@ def doctor(root: Path = RootOption) -> None:
     )
     console.print(f"Models:   {' → '.join(settings.models)}")
     files = list_source_files(settings)
-    map_tokens = estimate_tokens(build_map(settings, files))
-    console.print(f"Project:  {len(files)} source files, map ≈ {map_tokens:,} tokens")
+    repo_map, level = fit_map(settings, files)
+    map_tokens = estimate_tokens(repo_map)
+    console.print(f"Project:  {len(files)} source files, map ≈ {map_tokens:,} tokens ({level})")
     try:
         backend = llm_module.make_backend(settings)
     except ConfigError as exc:

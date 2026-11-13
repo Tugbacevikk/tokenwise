@@ -53,6 +53,8 @@ extensions = [".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".kt", ".cs", ".go",
 max_files = 8
 # Files longer than this may be sent focused: only the functions the request needs
 focus_lines = 300
+# Largest project map (tokens). A bigger project gets a shorter map: tests first, then details.
+map_max_tokens = {map_max_tokens}
 # Stop asking once the last 7 days cost this much (USD). 0 = no limit.
 budget_usd_week = 0
 # Ollama only: the largest context window tokenwise may ask for. Bigger needs more GPU memory.
@@ -74,6 +76,7 @@ def config_template(provider: str) -> str:
         provider=provider,
         base_url_line=f'base_url = "{OLLAMA_URL}"' if local else f'# base_url = "{OLLAMA_URL}"',
         models=_toml_list(LOCAL_MODELS if local else ANTHROPIC_MODELS),
+        map_max_tokens=8000 if local else 16000,
     )
 
 
@@ -94,6 +97,7 @@ class Settings:
     focus_lines: int = 300
     budget_usd_week: float = 0.0
     max_context: int = 32768
+    map_max_tokens: int = 16000
     max_output_tokens: int = 4096
     cache: bool = True
     check: str = ""

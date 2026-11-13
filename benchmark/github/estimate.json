@@ -304,7 +304,7 @@
    "calls": [
     {
      "model": "claude-haiku-5-5",
-     "input": 30816,
+     "input": 7964,
      "output": 12
     },
     {
@@ -341,7 +341,7 @@
    "calls": [
     {
      "model": "claude-haiku-5-5",
-     "input": 30811,
+     "input": 7959,
      "output": 11
     },
     {
@@ -378,7 +378,7 @@
    "calls": [
     {
      "model": "claude-haiku-5-5",
-     "input": 30811,
+     "input": 7959,
      "output": 15
     },
     {
@@ -415,7 +415,7 @@
    "calls": [
     {
      "model": "claude-haiku-5-5",
-     "input": 17804,
+     "input": 13278,
      "output": 10
     },
     {
@@ -452,7 +452,7 @@
    "calls": [
     {
      "model": "claude-haiku-5-5",
-     "input": 17819,
+     "input": 13293,
      "output": 9
     },
     {

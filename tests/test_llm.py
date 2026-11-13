@@ -133,3 +133,11 @@ def test_make_backend_ollama(tmp_path):
     backend = make_backend(Settings(root=tmp_path, provider="ollama", max_context=8192))
     assert isinstance(backend, OllamaLLM) and backend.max_context == 8192
     assert backend.base_url == "http://localhost:11434"
+
+
+def test_strip_thinking():
+    from tokenwise.llm import strip_thinking
+
+    assert strip_thinking("<think>\nSEARCH maybe\n</think>\n\nanswer") == "answer"
+    assert strip_thinking("reasoning without opening tag</think>answer") == "answer"
+    assert strip_thinking("plain <think> mention") == "plain <think> mention"

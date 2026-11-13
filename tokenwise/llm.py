@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -68,6 +69,15 @@ class AnthropicLLM:
         return Reply(text=text, model=model, usage=usage)
 
 
+_THINK = re.compile(r"<think>.*?</think>\s*|^.*?</think>\s*", re.S)
+
+
+def strip_thinking(text: str) -> str:
+    """Reasoning models (qwen3, deepseek-r1...) may put <think>...</think> before the answer.
+    Nothing in it is meant for us, and a SEARCH-like line inside it would confuse parsing."""
+    return _THINK.sub("", text) if "</think>" in text else text
+
+
 class LLMError(Exception):
     """A model call failed in a way the user can fix (server down, unknown model, bad key)."""
 
@@ -128,7 +138,7 @@ class OpenAICompatibleLLM:
             ],
         }
         data = _post(self.client, "/chat/completions", body, model, self.base_url)
-        text = data["choices"][0]["message"].get("content") or ""
+        text = strip_thinking(data["choices"][0]["message"].get("content") or "")
         u = data.get("usage") or {}
         usage = Usage(u.get("prompt_tokens", 0), u.get("completion_tokens", 0))
         return Reply(text=text, model=model, usage=usage)
@@ -188,7 +198,7 @@ class OllamaLLM:
             },
         }
         data = _post(self.client, "/api/chat", body, model, self.base_url)
-        text = (data.get("message") or {}).get("content") or ""
+        text = strip_thinking((data.get("message") or {}).get("content") or "")
         usage = Usage(data.get("prompt_eval_count", 0), data.get("eval_count", 0))
         return Reply(text=text, model=model, usage=usage)
 

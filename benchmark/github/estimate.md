@@ -12,11 +12,11 @@ Model çağrılmadan, tokenwise'ın kendi koduyla ve her görevin referans çöz
 | rag-widget-escape | 17,421 | 17,365 | 2,552 | 1,382 | 79 | 0.0486 | 0.0043 | sonnet (medium) | ✅ |
 | istakip-password-length | 54,012 | 53,799 | 3,147 | 22,930 | 135 | 0.3369 | 0.0046 | sonnet (medium) | ✅ |
 | istakip-atomic-config | 54,012 | 53,810 | 2,814 | 22,920 | 103 | 0.3368 | 0.0036 | sonnet (medium) | ✅ |
-| gateway-breaker-validate | 371,327 | 365,910 ⚠ | 34,546 | 1,576 | 107 | 0.7476 | 0.0115 | sonnet (medium) | ✅ |
-| gateway-office-is-open | 371,327 | 365,904 ⚠ | 34,781 | 1,816 | 75 | 0.7500 | 0.0117 | sonnet (medium) | ✅ |
-| gateway-negative-words | 371,327 | 365,904 ⚠ | 34,105 | 6,349 | 75 | 0.7953 | 0.0103 | sonnet (medium) | ✅ |
-| kelime-chunker-validate | 227,401 | 225,362 ⚠ | 20,217 | 848 | 106 | 0.4592 | 0.0076 | sonnet (medium) | ✅ |
-| kelime-wer | 227,401 | 225,377 ⚠ | 20,209 | 852 | 105 | 0.4593 | 0.0075 | sonnet (medium) | ✅ |
+| gateway-breaker-validate | 371,327 | 365,910 ⚠ | 11,694 | 1,576 | 107 | 0.7476 | 0.0092 | sonnet (medium) | ✅ |
+| gateway-office-is-open | 371,327 | 365,904 ⚠ | 11,929 | 1,816 | 75 | 0.7500 | 0.0094 | sonnet (medium) | ✅ |
+| gateway-negative-words | 371,327 | 365,904 ⚠ | 11,253 | 6,349 | 75 | 0.7953 | 0.0080 | sonnet (medium) | ✅ |
+| kelime-chunker-validate | 227,401 | 225,362 ⚠ | 15,691 | 848 | 106 | 0.4592 | 0.0071 | sonnet (medium) | ✅ |
+| kelime-wer | 227,401 | 225,377 ⚠ | 15,683 | 852 | 105 | 0.4593 | 0.0071 | sonnet (medium) | ✅ |
 | iot-plant-profile | 8,979 | 7,975 | 1,740 | 2,711 | 72 | 0.0431 | 0.0033 | sonnet (medium) | ✅ |
 | staj-greedy-seed | 8,709 | 8,448 | 1,134 | 431 | 157 | 0.0212 | 0.0030 | sonnet (medium) | ✅ |
 | su-server-traversal | 4,513 | 4,569 | 988 | 456 | 91 | 0.0137 | 0.0023 | sonnet (medium) | ✅ |
@@ -27,9 +27,9 @@ Model çağrılmadan, tokenwise'ın kendi koduyla ve her görevin referans çöz
 
 | Toplam (20 görev) | Baseline | tokenwise | Değişim |
 | --- | ---: | ---: | ---: |
-| Giriş tokeni | 1,763,113 | 169,165 | -90% |
+| Giriş tokeni | 1,763,113 | 91,557 | -95% |
 | Çıkış tokeni | 70,837 | 1,903 | -97% |
-| Maliyet ($) | 4.23 | 0.09 | -98% |
+| Maliyet ($) | 4.23 | 0.08 | -98% |
 
 ⚠ = baseline girişi 200 bin tokeni aşıyor; bu boyutta tüm projeyi göndermek pratikte mümkün olmayabilir (model bağlam sınırı ve fiyat kademesi).
 

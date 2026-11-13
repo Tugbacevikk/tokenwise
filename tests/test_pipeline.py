@@ -31,4 +31,4 @@ def test_run_without_files(settings, fake):
 def test_run_edit_failure(settings, fake):
     bad = "app/auth.py\n<<<<<<< SEARCH\nnope\n=======\nx\n>>>>>>> REPLACE\n"
     result = run("x", settings, fake('["app/auth.py"]', bad, bad), model="m")
-    assert not result.ok and result.error == "no applicable edit from m"
+    assert not result.ok and result.error.startswith("no applicable edit from m;")

@@ -223,3 +223,21 @@ def test_benchmark_continues_after_a_too_long_prompt(tmp_path, monkeypatch, fake
     assert "| Checks passed |" not in md and "big · tokenwise: context too long" in md
     shutil_dir = BENCH / "projects" / ".tokenwise"
     assert not shutil_dir.exists()
+
+
+def test_failure_details_show_the_last_reply(fake):
+    task = load_tasks(BENCH / "tasks.toml")[0]
+    bad = "cart.py\n<<<<<<< SEARCH\nnot in the file\n=======\nx\n>>>>>>> REPLACE"
+    outcome = run_task(
+        task,
+        "tokenwise",
+        Settings(root=BENCH),
+        fake('["cart.py"]', bad, bad, bad, bad, bad, bad),
+        BENCH / "checks",
+    )
+    assert (
+        not outcome.result.ok
+        and "last problem: cart.py: SEARCH text not found" in outcome.result.error
+    )
+    md = markdown([outcome])
+    assert "Last reply (editor," in md and "not in the file" in md

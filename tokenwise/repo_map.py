@@ -192,15 +192,64 @@ def outline(path: str, source: str) -> list[str]:
     return outline_js(source)
 
 
-def build_map(settings: Settings, files: list[str]) -> str:
-    blocks = []
+_TEST_DIRS = {"test", "tests", "__tests__", "spec", "specs", "testing"}
+_TEST_FILE = re.compile(r"(^test_.*|.*_test\.\w+|.*\.(test|spec)\.\w+|.*Tests?\.\w+)$")
+_NAME_ONLY = re.compile(r"\(.*$")
+
+# Map detail levels, most detailed first. A large repository gets the first one that fits
+# `map_max_tokens`, so its map still fits a small local model's context window.
+LEVELS = (
+    "full",  # every file with signatures
+    "tests as paths",  # test files listed without their symbols
+    "names only",  # signatures shortened to names; tests as paths
+    "top-level names",  # no methods; tests left out
+    "paths only",  # just the file list, tests left out
+)
+
+
+def is_test_file(rel: str) -> bool:
+    parts = rel.split("/")
+    return any(p in _TEST_DIRS for p in parts[:-1]) or bool(_TEST_FILE.match(parts[-1]))
+
+
+def _render(entries: list[tuple[str, str, list[str], bool]], level: int) -> str:
+    blocks, skipped = [], 0
+    for _rel, title, symbols, test in entries:
+        if test and level >= 3:
+            skipped += 1
+            continue
+        if level >= 4 or (test and level >= 1):
+            blocks.append(title)
+            continue
+        shown = symbols
+        if level >= 2:
+            shown = [_NAME_ONLY.sub("", s).replace(" =", "").rstrip() for s in shown]
+        if level >= 3:
+            shown = [s for s in shown if not s.startswith(" ")]
+        blocks.append("\n".join([title, *("  " + s for s in shown)]))
+    if skipped:
+        blocks.append(f"({skipped} test files not listed)")
+    return "\n".join(blocks)
+
+
+def fit_map(settings: Settings, files: list[str]) -> tuple[str, str]:
+    """The most detailed map within settings.map_max_tokens, and the name of its level."""
+    entries = []
     for rel in files:
         source = (settings.root / rel).read_text("utf-8", errors="replace")
-        symbols = outline(rel, source)
         lines = source.count("\n") + 1
         title = f"{rel} [large: {lines} lines]" if lines > settings.focus_lines else rel
-        blocks.append("\n".join([title, *("  " + s for s in symbols)]))
-    return "\n".join(blocks)
+        entries.append((rel, title, outline(rel, source), is_test_file(rel)))
+    text = ""
+    for level, name in enumerate(LEVELS):
+        text = _render(entries, level)
+        if not settings.map_max_tokens or estimate_tokens(text) <= settings.map_max_tokens:
+            return text, name
+    return text, LEVELS[-1]
+
+
+def build_map(settings: Settings, files: list[str]) -> str:
+    return fit_map(settings, files)[0]
 
 
 def estimate_tokens(text: str) -> int:

@@ -209,13 +209,18 @@ def details(outcomes: list[Outcome]) -> str:
     for o in outcomes:
         if o.passed is not False and o.result.ok:
             continue
-        diff = "".join(c.diff for c in o.result.changes) or "(no change)"
+        diff = "".join(c.diff for c in o.result.changes)
         lines = [
             f"<details><summary>{o.task.name} · {o.method}: "
             f"{o.result.error or 'check failed'}</summary>",
             "",
         ]
-        lines += ["```diff", diff.rstrip(), "```"]
+        if diff:
+            lines += ["```diff", diff.rstrip(), "```"]
+        elif o.result.replies:  # nothing applied: show what the model last said
+            last = o.result.replies[-1]
+            text = last.text if len(last.text) <= 3000 else last.text[:3000] + "\n…"
+            lines += [f"Last reply ({last.role}, {last.model}):", "", "```", text.rstrip(), "```"]
         if o.check_output:
             lines += ["", "```", o.check_output.rstrip(), "```"]
         lines += ["", "</details>", ""]

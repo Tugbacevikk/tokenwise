@@ -109,7 +109,7 @@ def test_propose_retries_with_feedback_then_gives_up(settings, fake):
     bad = "app/auth.py\n<<<<<<< SEARCH\nmissing\n=======\nx\n>>>>>>> REPLACE\n"
     llm = fake(bad, "no blocks here")
     proposal = propose("x", ["app/auth.py"], settings, llm, ALL_FILES, models=["m1"])
-    assert proposal.changes == [] and proposal.error == "no applicable edit from m1"
+    assert proposal.changes == [] and proposal.error.startswith("no applicable edit from m1;")
     assert "could not be applied" in llm.calls[1]["prompt"]
     assert len(llm.calls) == 2
 
