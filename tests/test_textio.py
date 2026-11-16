@@ -52,6 +52,9 @@ def test_new_file_follows_crlf_of_its_siblings(settings):
 
 
 def test_lf_file_stays_lf(settings):
+    # write_text would turn \n into \r\n on Windows; the file must really be LF here
+    path = settings.root / "app/auth.py"
+    path.write_bytes(path.read_bytes().replace(b"\r\n", b"\n"))
     apply_changes(settings, plan_changes(settings.root, parse_edits(EDIT)))
     assert b"\r" not in (settings.root / "app/auth.py").read_bytes()
 

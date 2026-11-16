@@ -7,6 +7,8 @@ on:
 jobs:
   test:
     runs-on: ${{ matrix.os }}
+    env:
+      PYTHONUTF8: "1"  # open() defaults to UTF-8 on every OS, not the Windows code page
     strategy:
       fail-fast: false
       matrix:
