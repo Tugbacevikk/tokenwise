@@ -100,6 +100,10 @@
     <div class="muted" id="budget-text"></div>
   </div>
   <div>
+    <h2>Maliyet (son 7 gün)</h2>
+    <div id="costs" class="muted"></div>
+  </div>
+  <div>
     <h2>Sohbetler</h2>
     <button id="new-session" class="plan-link">+ Yeni sohbet</button>
     <div id="sessions"></div>
@@ -659,6 +663,24 @@ async function refresh() {
   $("budget-text").textContent = limit
     ? `$${current.budget.spent_usd.toFixed(4)} / $${limit.toFixed(2)} (son 7 gün)`
     : `$${current.budget.spent_usd.toFixed(4)} (son 7 gün, limit yok)`;
+  const costs = await api(P("/costs"));
+  $("costs").textContent = "";
+  const names = { tokenwise: "Değişiklik", plan: "Plan", chat: "Sohbet" };
+  for (const [method, usd] of Object.entries(costs.by_method)) {
+    $("costs").appendChild(el("div", "", `${names[method] || method}: $${usd.toFixed(4)}`));
+  }
+  if (!costs.runs) {
+    $("costs").appendChild(el("div", "", "Bu dönemde harcama yok."));
+  } else {
+    const peak = Math.max(...costs.by_day.map((d) => d.cost_usd)) || 1;
+    for (const d of costs.by_day) {
+      const bar = el("div", "bar");
+      const fill = el("div");
+      fill.style.width = (d.cost_usd / peak) * 100 + "%";
+      bar.appendChild(fill);
+      $("costs").append(el("div", "", `${d.day.slice(5)}  $${d.cost_usd.toFixed(4)}`), bar);
+    }
+  }
   const plans = await api(P("/plans"));
   $("plans").textContent = "";
   for (const p of plans) {

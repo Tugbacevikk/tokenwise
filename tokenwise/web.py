@@ -505,6 +505,30 @@ def create_app(roots, llm_factory=None, token: str = "") -> FastAPI:
             },
         }
 
+    @app.get("/api/projects/{pid}/costs")
+    def costs(pid: str, days: int = 7) -> dict:
+        """Spending over the last `days` days: per method, per local day and per run."""
+        proj = project(pid)
+        settings = load_settings(proj.root)
+        days = min(max(days, 1), 90)
+        ledger = Ledger(ledger_path(settings))
+        try:
+            rows = ledger.rows(days)
+            by_method = {m: ledger.summary(days, method=m)["cost_usd"] for m in SPEND_METHODS}
+        finally:
+            ledger.close()
+        per_day: dict[str, float] = {}
+        for row in rows:
+            day = datetime.fromisoformat(row["ts"]).astimezone().date().isoformat()
+            per_day[day] = per_day.get(day, 0.0) + row["cost"]
+        return {
+            "days": days,
+            "total_usd": sum(row["cost"] for row in rows),
+            "by_method": by_method,
+            "by_day": [{"day": d, "cost_usd": c} for d, c in sorted(per_day.items())],
+            "runs": len(rows),
+        }
+
     @app.post("/api/projects/{pid}/estimate")
     def estimate(pid: str, body: EstimateBody) -> dict:
         proj = project(pid)

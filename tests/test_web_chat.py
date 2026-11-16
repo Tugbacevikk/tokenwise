@@ -205,3 +205,14 @@ def test_a_model_error_becomes_an_error_message(project):
     ).json()
     assert kinds(turn) == ["text", "error"]
     assert "server down" in turn["messages"][1]["content"]
+
+
+def test_costs_count_the_runs_by_method_and_day(chat_for):
+    client, llm, pid, sid, send = chat_for(ROUTE_CHANGE, SELECTED, EDIT)
+    send("şifre kontrolü ekle")
+    costs = client.get(f"/api/projects/{pid}/costs").json()
+    assert costs["runs"] == 2  # the routing call (chat) and the change (tokenwise)
+    assert costs["by_method"]["tokenwise"] > 0
+    assert costs["by_method"]["chat"] > 0
+    assert sum(d["cost_usd"] for d in costs["by_day"]) == pytest.approx(costs["total_usd"])
+    assert client.get(f"/api/projects/{pid}/costs?days=0").json()["days"] == 1
