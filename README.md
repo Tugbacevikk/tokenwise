@@ -297,6 +297,22 @@ pytest --cov=tokenwise
 
 Testler sahte bir modelle çalışır, API'ye para harcamaz. Her push'ta GitHub Actions aynı kontrolleri çalıştırır ve VS Code eklentisini derleyip paketler.
 
+## Web arayüzü
+
+Tarayıcıda sohbet gibi kullanmak için:
+
+```powershell
+pip install "tokenwise-coder[web]"
+tokenwise serve --root C:\projem                 # birden çok proje için --root tekrarla
+```
+
+Adres `http://127.0.0.1:8765` olur ve yalnızca bu bilgisayardan erişilir. Sayfada:
+
+- **Değişiklik iste:** isteğini yaz, model ve dosyaları seç (boş bırakırsan seçici bulur), önce tahmin al, sonra gönder. Öneri satır içi diff olarak gelir; **Uygula**, **Vazgeç** ya da git deposuysa **Commit'le**.
+- **Planla:** bir hedef yaz; iş parçacıklarına bölünür, her birinin hazır prompt'u vardır. Kopyalayabilir, tek tek ya da **Planı sırayla çalıştır** ile çalıştırabilirsin. Planlar `.tokenwise/plans/` altında kalır ve Markdown olarak indirilebilir.
+
+Başka bir adresten erişmek istersen (`--host 0.0.0.0`) `--token` vermek zorunludur; sayfa bu anahtarı her istekte gönderir.
+
 ## Yayınlama
 
 Yayın, etiket (tag) gönderince GitHub Actions tarafından otomatik yapılır. Bir kerelik hazırlık:

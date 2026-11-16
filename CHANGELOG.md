@@ -7,6 +7,24 @@ a change that breaks existing use bumps major.
 
 First release.
 
+- Prices can have a long-prompt tier (`long_threshold`, `long_multiplier`): Claude Haiku 5.5
+  costs 5x above 100K prompt tokens, which the cost ledger now counts. Overrides take two
+  optional extra values: `[input, cache_write, cache_read, output, long_threshold, long_multiplier]`.
+- `tokenwise serve`: a local web page for one or more projects (`--root` repeated). Chat,
+  model choice, file picker (the selector is skipped for picked files), token and cost estimate
+  before running, diffs (unified or side by side) with Apply / Discard / Undo, weekly budget.
+  Install with `pip install "tokenwise-coder[web]"`. It listens on 127.0.0.1 only; another
+  `--host` needs `--token`, which every API call must send.
+- Planning in the page: a goal is split into work threads with a ready-to-paste prompt, the
+  files, a check command, a level and the threads they depend on. Plans are saved in
+  `.tokenwise/plans/` with each thread's status, and can be exported as Markdown.
+  "Planı sırayla çalıştır" runs the threads in order, waiting for Apply or Discard on each.
+- Commit from the page: an applied change can be committed to git, containing only the files
+  tokenwise changed.
+- `pipeline.run(files=...)`: the caller can name the files, skipping the selector model call.
+- CI runs the tests on Windows too.
+- The router no longer treats topic nouns (`cache`, `database`, `schema`, `protocol`) as a sign
+  of a hard change; "add --json to the cache command" now starts below the top model.
 - Files defining a function or class named in the request are added to the selection
   (first) and focused on that symbol; invented paths (`core/isci_takip.py`) and copied
   placeholders (`path/to/predict.py`) are matched to the one real file with that name.

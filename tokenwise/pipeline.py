@@ -103,15 +103,21 @@ class Result:
         }
 
 
-def run(request: str, settings: Settings, llm: LLM, model: str = "") -> Result:
+def run(
+    request: str, settings: Settings, llm: LLM, model: str = "", files: list[str] | None = None
+) -> Result:
+    """`files`: the user picked the files, so the cheap selector is skipped entirely."""
     result = Result(request=request, prices=settings.prices, check=settings.check)
     all_files = list_source_files(settings)
-    repo_map = build_map(settings, all_files)
-
-    chosen, selector_reply, focus = select_files(request, repo_map, settings, llm)
-    result.replies.append(selector_reply)
-    mentioned = mentioned_targets(request, settings, all_files)
-    chosen, focus = merge_selection(chosen, focus, mentioned, all_files, settings.max_files)
+    if files:
+        chosen = [f for f in dict.fromkeys(files) if f in all_files][: settings.max_files]
+        focus: dict[str, list[str]] = {}
+    else:
+        repo_map = build_map(settings, all_files)
+        chosen, selector_reply, focus = select_files(request, repo_map, settings, llm)
+        result.replies.append(selector_reply)
+        mentioned = mentioned_targets(request, settings, all_files)
+        chosen, focus = merge_selection(chosen, focus, mentioned, all_files, settings.max_files)
     result.files = chosen
     if not chosen:
         result.error = "the selector found no relevant files"

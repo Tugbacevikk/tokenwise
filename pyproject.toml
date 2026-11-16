@@ -31,7 +31,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6"]
+web = ["fastapi>=0.110", "uvicorn>=0.29"]
+dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6", "fastapi>=0.110", "uvicorn>=0.29"]
 
 [project.scripts]
 tokenwise = "tokenwise.cli:app"
