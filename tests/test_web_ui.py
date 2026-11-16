@@ -34,27 +34,24 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
-@pytest.fixture
-def served(project):
-    llm = FakeLLM(PLAN, '["app/auth.py"]', EDIT)
+def start(app):
+    """Runs the app on a free port in a thread; returns the server and its URL."""
     port = free_port()
-    server = uvicorn.Server(
-        uvicorn.Config(
-            create_app(project, llm_factory=lambda s: llm),
-            host="127.0.0.1",
-            port=port,
-            log_level="warning",
-        )
-    )
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    threading.Thread(target=server.run, daemon=True).start()
     for _ in range(100):
         if server.started:
             break
         time.sleep(0.05)
-    yield f"http://127.0.0.1:{port}/", project
+    return server, f"http://127.0.0.1:{port}/"
+
+
+@pytest.fixture
+def served(project):
+    llm = FakeLLM(PLAN, '["app/auth.py"]', EDIT)
+    server, url = start(create_app(project, llm_factory=lambda s: llm))
+    yield url, project
     server.should_exit = True
-    thread.join(timeout=5)
 
 
 def test_plan_thread_is_applied_in_the_browser(served):
@@ -84,3 +81,60 @@ def test_plan_thread_is_applied_in_the_browser(served):
         browser.close()
     assert not errors
     assert "len(password)" in (project / "app" / "auth.py").read_text("utf-8")
+
+
+ROUTE_ASK = '{"intent": "change", "ready": false, "questions": ["Minimum uzunluk kaç olsun?"]}'
+ROUTE_EXPLAIN = '{"intent": "explain", "ready": true, "questions": []}'
+
+
+def open_page(browser, url):
+    page = browser.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.goto(url)
+    page.wait_for_selector("#files")
+    return page, errors
+
+
+def test_chat_asks_a_question_then_applies_the_change(project):
+    llm = FakeLLM(ROUTE_ASK, '["app/auth.py"]', EDIT)
+    server, url = start(create_app(project, llm_factory=lambda s: llm))
+    with sync_api.sync_playwright() as p:
+        try:
+            browser = p.chromium.launch()
+        except Exception as exc:
+            server.should_exit = True
+            pytest.skip(f"Chromium is not installed: {exc}")
+        page, errors = open_page(browser, url)
+        page.fill("#input", "şifreyi kontrol et")
+        page.click("#send")
+        page.wait_for_selector("text=Minimum uzunluk kaç olsun?")
+        page.fill("#input", "8 karakter")
+        page.click("#send")
+        page.wait_for_selector("text=Uygula")
+        page.click("text=Uygula")
+        page.wait_for_selector("text=Uygulandı.")
+        browser.close()
+    server.should_exit = True
+    assert not errors
+    assert "len(password)" in (project / "app" / "auth.py").read_text("utf-8")
+
+
+def test_chat_explains_without_editing(project):
+    llm = FakeLLM(ROUTE_EXPLAIN, "check True döndürüyor.")
+    server, url = start(create_app(project, llm_factory=lambda s: llm))
+    with sync_api.sync_playwright() as p:
+        try:
+            browser = p.chromium.launch()
+        except Exception as exc:
+            server.should_exit = True
+            pytest.skip(f"Chromium is not installed: {exc}")
+        page, errors = open_page(browser, url)
+        page.fill("#input", "check ne yapıyor?")
+        page.click("#send")
+        page.wait_for_selector("text=check True döndürüyor.")
+        assert page.locator("text=Uygula").count() == 0
+        browser.close()
+    server.should_exit = True
+    assert not errors
+    assert "return True" in (project / "app" / "auth.py").read_text("utf-8")
