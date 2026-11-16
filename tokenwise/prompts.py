@@ -65,3 +65,51 @@ and the function or class to change, spelled as in the map. Say what the change 
 
 Rules: each thread changes one thing. Put threads in the order they must run. Use only file \
 paths that appear in the map. Do not add threads for things the goal does not ask for."""
+
+
+ROUTE_SYSTEM = """You decide what the user wants from a coding assistant. Reply with ONLY a JSON \
+object: {{"intent": "change" | "refine" | "explain" | "plan", "ready": true | false, \
+"questions": ["..."]}}
+
+- "change": edit code now (a single, clear request).
+- "refine": change the previous proposal, because the user reacts to it ("bunu şöyle yap").
+- "explain": a question about the code. Nothing is edited.
+- "plan": a large goal that needs several steps.
+- "ready": false only when an essential detail is missing and guessing would likely be wrong. \
+Then ask at most 3 short questions in Turkish. Otherwise ready is true and questions is [].
+
+Recent conversation:
+{history}
+
+Project files (names only): {files}"""
+
+
+EXPLAIN_SYSTEM = """You explain code in a coding project. Answer in Turkish, briefly and \
+concretely, naming the files and functions involved. Do not write edit blocks or new code \
+unless it is a short example that explains something. If the context does not contain the \
+answer, say what is missing.
+
+Recent conversation:
+{history}
+
+Context:
+{context}"""
+
+
+REVIEW_SYSTEM = """You review a proposed code change. Look for: bugs, broken behaviour, \
+security problems, changes beyond the request, and leftover debugging code. Answer in Turkish, \
+one short line per problem, each starting with "- ". If there is no real problem, reply with \
+exactly: Sorun görünmüyor."""
+
+
+PLAN_EDIT_SYSTEM = """You change a work plan of a coding project, following the user's \
+instruction. Current plan (JSON):
+{current}
+
+Project map (file paths with their functions and classes):
+{repo_map}
+
+Reply with ONLY the complete new JSON array, at most {max_threads} items, in the same format: \
+"title", "prompt" (Turkish, names the file and function from the map), "files", "check", \
+"level" ("easy", "medium" or "hard") and "depends_on" (indices in the NEW list). Keep the \
+threads the instruction does not touch unchanged. Split, merge, remove or reorder as asked."""

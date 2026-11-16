@@ -1,0 +1,61 @@
+# Copy to .github/workflows/tokenwise.yml in your repository.
+# - Every pull request gets a ReleaseGuard risk report as a comment (updated on each push).
+# - Every Monday RepoDoctor scans the default branch; the health history is kept in the
+#   Actions cache and the weekly report is attached to the run.
+# No model calls and no API key are needed: both are deterministic.
+name: tokenwise
+
+on:
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  releaseguard:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # history is part of the risk signal
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install tokenwise-coder
+      - name: Risk report
+        run: tokenwise risk --base "origin/${{ github.base_ref }}" --format markdown > risk.md
+      - name: Comment on the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file risk.md --edit-last \
+            || gh pr comment "${{ github.event.pull_request.number }}" --body-file risk.md
+
+  repodoctor:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install tokenwise-coder
+      - uses: actions/cache@v4
+        with:
+          path: .tokenwise/health.db
+          key: tokenwise-health-${{ github.run_id }}
+          restore-keys: tokenwise-health-
+      - run: tokenwise scan
+      - run: tokenwise findings --report > health-report.md
+      - run: cat health-report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: health-report
+          path: health-report.md

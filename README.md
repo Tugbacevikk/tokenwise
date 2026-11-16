@@ -283,6 +283,12 @@ tokenwise/
 ├── textio.py     # satır sonu (CRLF/LF) ve BOM koruyan okuma/yazma
 ├── benchmark.py  # baseline ile tokenwise karşılaştırması, geçici kopyada kontrol
 ├── llm.py        # Anthropic ve OpenAI uyumlu arka uçlar, SQLite önbellek
+├── graph.py      # ortak çekirdek: import grafiği, etkilenen dosyalar, döngüler, test eşleşmesi
+├── history.py    # ortak çekirdek: git geçmişi, değişim sıklığı, hata düzeltmeleri, birlikte değişim
+├── analyzers.py  # RepoDoctor: deterministik analizler, kalıcı parmak izli bulgular
+├── health.py     # RepoDoctor: bulgu veritabanı (.tokenwise/health.db), skor, haftalık rapor
+├── release.py    # ReleaseGuard: PR risk skoru, kanıtlar, kontrol listesi
+├── web.py        # tokenwise serve: yerel web arayüzünün sunucusu
 └── prompts.py    # modellere giden tüm talimatlar
 vscode-extension/ # VS Code eklentisi (TypeScript), CLI'ı JSON modunda çağırır
 benchmark/        # örnek proje, görevler ve kontrol testleri
@@ -312,6 +318,46 @@ Adres `http://127.0.0.1:8765` olur ve yalnızca bu bilgisayardan erişilir. Sayf
 - **Planla:** bir hedef yaz; iş parçacıklarına bölünür, her birinin hazır prompt'u vardır. Kopyalayabilir, tek tek ya da **Planı sırayla çalıştır** ile çalıştırabilirsin. Planlar `.tokenwise/plans/` altında kalır ve Markdown olarak indirilebilir.
 
 Başka bir adresten erişmek istersen (`--host 0.0.0.0`) `--token` vermek zorunludur; sayfa bu anahtarı her istekte gönderir.
+
+## Platform: Agent, RepoDoctor, ReleaseGuard
+
+Tokenwise üç modülü tek bir ortak çekirdek üzerinde çalıştırır. Çekirdek, projenin import
+grafiğini ve git geçmişini çıkarır; üç modül de bu veriyi kullanır.
+
+| Modül | Sorduğu soru | Komut |
+| --- | --- | --- |
+| Agent | Bu değişikliği en az tokenla nasıl yaparım? | `tokenwise ask`, `tokenwise fix` |
+| RepoDoctor | Bu deponun genel durumu nasıl? | `tokenwise scan`, `tokenwise findings` |
+| ReleaseGuard | Bu değişiklik bu depo için ne kadar riskli? | `tokenwise risk` |
+
+```bash
+tokenwise scan                      # analiz et, bulguları kaydet, sağlık skorunu çıkar
+tokenwise findings                  # öncelik sırasıyla açık bulgular
+tokenwise findings --report         # haftalık Markdown rapor
+tokenwise fix 12                    # bulgu #12'yi Agent'a düzelttir, yeniden tarayıp doğrula
+tokenwise risk --base main          # bu dalın riski, kanıtları ve kontrol listesi
+tokenwise risk -f markdown          # PR yorumu olarak yapıştırılacak rapor
+```
+
+Döngü: **anla → tespit et → önceliklendir → düzelt → doğrula → izle.** Web arayüzünde
+(`tokenwise serve`) aynı akış "Tara", "Bulgular", "Agent ile düzelt" ve "Riski hesapla"
+düğmeleriyle çalışır; uygulanan düzeltmeden sonra bulgu yeniden taranıp doğrulanır.
+
+Tasarım kuralları:
+
+- **Analizi araçlar yapar, model değil.** Karmaşıklık, test eşleşmesi, güvenlik örüntüleri,
+  import döngüleri ve geçmiş sinyalleri deterministiktir; tarama ve risk raporu hiç token
+  harcamaz. Model yalnızca düzeltme ve açıklama için çağrılır.
+- **Her bulgunun kalıcı kimliği vardır.** Parmak izi satır numarasına bağlı değildir; bulgu açık,
+  çözülmüş, yeniden açılmış ya da (yalnızca bir kişi isterse) yok sayılmış olarak izlenir.
+- **Öncelik = önem × sıcak nokta.** Sık değişen ve sık düzeltilen dosyalardaki bulgular öne çıkar.
+- **Risk skoru karar vermez.** Altı sinyalin (etki, geçmiş hata, test eksikliği, kritiklik,
+  karmaşıklık, büyüklük) her biri kanıtı ve güven seviyesiyle gösterilir. Ağırlıklar deneysel
+  başlangıç değerleridir; `--fail-above` verilmedikçe CI'ı durdurmaz.
+
+GitHub'da her PR'a risk raporu yorumu ve haftalık sağlık raporu için
+[`examples/github/tokenwise.yml`](examples/github/tokenwise.yml) dosyasını
+`.github/workflows/` altına kopyalayın. API anahtarı gerekmez.
 
 ## Yayınlama
 
