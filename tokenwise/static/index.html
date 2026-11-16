@@ -82,6 +82,9 @@
   }
   .send { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; gap: 8px; flex-wrap: wrap; }
   .hint { color: var(--muted); font-size: 12.5px; }
+  .pre { white-space: pre-wrap; }
+  .plan-link.on { font-weight: 600; border-color: var(--accent); }
+  .q { margin: 6px 0 0; }
 </style>
 </head>
 <body>
@@ -95,6 +98,11 @@
     <h2>Haftalık bütçe</h2>
     <div class="bar"><div id="budget-bar"></div></div>
     <div class="muted" id="budget-text"></div>
+  </div>
+  <div>
+    <h2>Sohbetler</h2>
+    <button id="new-session" class="plan-link">+ Yeni sohbet</button>
+    <div id="sessions"></div>
   </div>
   <div>
     <h2>Planlar</h2>
@@ -114,11 +122,21 @@
   <footer>
     <div class="composer">
       <div class="row">
-        <button id="mode-change" class="on">Değişiklik iste</button>
+        <button id="mode-chat" class="on">Sohbet</button>
+        <button id="mode-change">Değişiklik iste</button>
         <button id="mode-plan">Planla</button>
+        <select id="intent" title="Sohbet modunda ne yapılsın">
+          <option value="auto">Otomatik</option>
+          <option value="change">Değişiklik</option>
+          <option value="refine">Düzelt</option>
+          <option value="explain">Açıkla</option>
+          <option value="plan">Plan</option>
+        </select>
         <span class="hint">Model:</span>
         <select id="model"></select>
         <label class="hint"><input type="checkbox" id="sbs"> yan yana diff</label>
+        <button id="mic">Sesle yaz</button>
+        <label class="hint"><input type="checkbox" id="speak"> yanıtı sesli oku</label>
       </div>
       <div class="row" style="margin-top:8px">
         <input type="text" id="pick" list="file-list" placeholder="Dosya ekle (boşsa seçici otomatik seçer)">
@@ -147,9 +165,11 @@ const TOKEN = (() => {
 })();
 let pid = null;
 let project = null;
-let mode = "change";
+let mode = "chat";
 let busy = false;
 let picked = [];
+let sid = null;
+let speakReplies = false;
 
 function el(tag, cls, text) {
   const node = document.createElement(tag);
@@ -266,9 +286,30 @@ function resultView(res) {
   const row = el("div", "btns");
   const apply = button("Uygula", async () => {
     try {
-      await api(P("/apply"), { run_id: res.run_id });
+      const applied = await api(P("/apply"), { run_id: res.run_id });
       apply.disabled = skip.disabled = true;
       box.appendChild(el("div", "ok", "Uygulandı."));
+      if (applied.check) {
+        const c = applied.check;
+        box.appendChild(el("div", c.passed ? "ok" : "err",
+          c.passed ? "Proje kontrolü geçti." : "Proje kontrolü geçmedi."));
+        if (c.passed === false) {
+          const undo = button("Geri al", async () => {
+            try {
+              await api(P("/undo"), {});
+              box.appendChild(el("div", "ok", "Geri alındı."));
+              refresh();
+            } catch (e) {
+              box.appendChild(el("div", "err", e.message));
+            }
+          });
+          const fix = button("Hatayla düzelt", () => {
+            $("input").value = `Uygulanan değişiklik proje kontrolünde şu hatayla geçmedi:\n${(c.output || "").slice(-1500)}\nBunu düzelt.`;
+            setChat("refine");
+          });
+          row.append(undo, fix);
+        }
+      }
       if (project && project.git) {
         const commitBtn = button("Commit'le", async () => {
           try {
@@ -291,7 +332,9 @@ function resultView(res) {
     apply.disabled = skip.disabled = true;
     settle("skipped");
   });
-  row.append(apply, skip);
+  const fine = button("Düzelt", () => setChat("refine"));
+  const look = button("İncele", () => review(res.run_id, box));
+  row.append(apply, skip, fine, look);
   box.appendChild(row);
   return { decided };
 }
@@ -433,13 +476,104 @@ async function send() {
   if (!text || busy) return;
   busy = true;
   $("send").disabled = true;
-  addUser(text);
   $("input").value = "";
-  if (mode === "plan") await sendPlan(text);
-  else await sendChange(text);
+  if (mode === "chat") {
+    await sendTurn(text);
+  } else {
+    addUser(text);
+    if (mode === "plan") await sendPlan(text);
+    else await sendChange(text);
+  }
   busy = false;
   $("send").disabled = false;
   $("input").focus();
+}
+
+function speak(text) {
+  if (!speakReplies || !("speechSynthesis" in window)) return;
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = "tr-TR";
+  speechSynthesis.cancel();
+  speechSynthesis.speak(u);
+}
+
+function renderMessage(m) {
+  if (m.role === "user") return addUser(m.content);
+  if (m.kind === "proposal" && m.data && m.data.run_id) return resultView(m.data);
+  const box = addAssistant();
+  if (m.kind === "plan") {
+    box.appendChild(el("div", "", m.content));
+    box.appendChild(button("Planı aç", () => openPlan(m.plan_id)));
+  } else if (m.kind === "question") {
+    box.appendChild(el("div", "", m.content));
+    for (const q of m.questions || []) box.appendChild(el("div", "muted q", "• " + q));
+    speak(m.content);
+  } else if (m.kind === "error") {
+    box.appendChild(el("div", "err", m.content));
+  } else {
+    box.appendChild(el("div", "pre", m.content));
+    speak(m.content);
+  }
+  return box;
+}
+
+async function loadSessions() {
+  const list = await api(P("/sessions"));
+  $("sessions").textContent = "";
+  for (const s of list) {
+    const b = button(`${s.title || s.id}  (${s.count})`, () => openSession(s.id));
+    b.className = "plan-link" + (s.id === sid ? " on" : "");
+    $("sessions").appendChild(b);
+  }
+  if (!list.length) $("sessions").appendChild(el("div", "muted", "Henüz sohbet yok."));
+}
+
+async function openSession(id) {
+  const s = await api(P(`/sessions/${id}`));
+  sid = id;
+  log.textContent = "";
+  for (const m of s.messages) renderMessage(m);
+  log.scrollTop = log.scrollHeight;
+  loadSessions();
+}
+
+async function ensureSession(title) {
+  if (sid) return sid;
+  const s = await api(P("/sessions"), { title: title.slice(0, 40) });
+  sid = s.id;
+  return sid;
+}
+
+async function sendTurn(text) {
+  const note = addAssistant();
+  note.appendChild(el("div", "muted", "Düşünüyor…"));
+  try {
+    await ensureSession(text);
+    const turn = await api(P(`/sessions/${sid}/messages`), {
+      text, intent: $("intent").value, model: modelValue(), files: picked,
+    });
+    note.remove();
+    for (const m of turn.messages) renderMessage(m);
+    $("intent").value = "auto";
+    loadSessions();
+    refresh();
+  } catch (e) {
+    note.textContent = "";
+    note.appendChild(el("div", "err", e.message));
+  }
+}
+
+async function review(runId, box) {
+  const note = el("div", "muted pre", "İnceleniyor…");
+  box.appendChild(note);
+  try {
+    const r = await api(P(`/runs/${runId}/review`), {});
+    note.className = "pre";
+    note.textContent = r.review;
+  } catch (e) {
+    note.className = "err";
+    note.textContent = e.message;
+  }
 }
 
 async function estimate() {
@@ -474,17 +608,28 @@ $("pick").addEventListener("change", () => {
 
 function setMode(next) {
   mode = next;
+  $("mode-chat").classList.toggle("on", next === "chat");
   $("mode-change").classList.toggle("on", next === "change");
   $("mode-plan").classList.toggle("on", next === "plan");
   $("input").placeholder = next === "plan"
     ? "Hedefi yaz. Örn: kayıt ekranına e-posta doğrulaması ekle"
-    : "Ne değişsin? Örn: login fonksiyonuna şifre uzunluk kontrolü ekle";
+    : next === "chat"
+      ? "Ne istiyorsun? Değişiklik, açıklama, plan ya da düzeltme yazabilirsin"
+      : "Ne değişsin? Örn: login fonksiyonuna şifre uzunluk kontrolü ekle";
+}
+
+function setChat(intent) {
+  setMode("chat");
+  $("intent").value = intent;
+  $("input").focus();
 }
 
 async function loadProject(id) {
   pid = id;
   localStorage.setItem("tw-project", id);
   picked = [];
+  sid = null;
+  log.textContent = "";
   renderChips();
   project = await api(P(""));
   $("sub").textContent = `${project.files.length} dosya · harita ≈ ${project.map_tokens.toLocaleString("tr-TR")} token${project.git ? " · git" : ""}`;
@@ -501,6 +646,7 @@ async function loadProject(id) {
     o.value = m;
     $("model").appendChild(o);
   }
+  await loadSessions();
   await refresh();
 }
 
@@ -553,12 +699,32 @@ $("undo").onclick = async () => {
 };
 $("send").onclick = send;
 $("estimate-btn").onclick = estimate;
+$("mode-chat").onclick = () => setMode("chat");
 $("mode-change").onclick = () => setMode("change");
+$("new-session").onclick = () => { sid = null; log.textContent = ""; loadSessions(); };
+$("speak").onchange = () => { speakReplies = $("speak").checked; };
+const Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
+if (Rec) {
+  $("mic").onclick = () => {
+    const r = new Rec();
+    r.lang = "tr-TR";
+    r.interimResults = false;
+    r.onresult = (e) => {
+      const said = e.results[0][0].transcript;
+      $("input").value = ($("input").value ? $("input").value + " " : "") + said;
+    };
+    r.start();
+  };
+} else {
+  $("mic").disabled = true;
+  $("mic").title = "Bu tarayıcı ses girişini desteklemiyor";
+}
 $("mode-plan").onclick = () => setMode("plan");
 $("sbs").onchange = () => {};
 $("input").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
 });
+setMode("chat");
 loadProjects().catch((e) => { $("sub").textContent = e.message; });
 </script>
 </body>

@@ -4,19 +4,25 @@ The server can change files in the projects it serves, so by default it listens 
 only. Another address needs a token, which every /api request must send in a header.
 
 Endpoints (pid is a project id from GET /api/projects):
-  GET  /                                  the page
-  GET  /api/projects                      the projects served
-  GET  /api/projects/{pid}                files, map size, models, budget, git or not
-  POST /api/projects/{pid}/estimate       rough input tokens and cost before running
-  POST /api/projects/{pid}/ask            one change request (also used to run a thread)
-  POST /api/projects/{pid}/apply          write the change proposed by an earlier ask
-  POST /api/projects/{pid}/undo           undo the last applied change
-  POST /api/projects/{pid}/commit         git commit of an applied change
-  POST /api/projects/{pid}/plan           split a goal into work threads, saved to .tokenwise/plans
-  GET  /api/projects/{pid}/plans          saved plans, newest first
-  GET  /api/projects/{pid}/plans/{id}     one plan
+  GET  /                                        the page
+  GET  /api/projects                            the projects served
+  GET  /api/projects/{pid}                      files, map size, models, budget, git or not
+  POST /api/projects/{pid}/estimate             rough input tokens and cost before running
+  POST /api/projects/{pid}/ask                  one change request (also used to run a thread)
+  POST /api/projects/{pid}/apply                write an earlier proposal; runs the check after
+  POST /api/projects/{pid}/undo                 undo the last applied change
+  POST /api/projects/{pid}/commit               git commit of an applied change
+  POST /api/projects/{pid}/runs/{run}/review    a second model reviews a proposal
+  POST /api/projects/{pid}/plan                 split a goal into work threads
+  GET  /api/projects/{pid}/plans                saved plans, newest first
+  GET  /api/projects/{pid}/plans/{id}           one plan
+  POST /api/projects/{pid}/plans/{id}/chat      change a plan with an instruction
   PUT  /api/projects/{pid}/plans/{id}/threads/{n}   set a thread's status
-  GET  /api/projects/{pid}/plans/{id}/export        the plan as Markdown
+  GET  /api/projects/{pid}/plans/{id}/export    the plan as Markdown
+  GET  /api/projects/{pid}/sessions             conversations, newest first
+  POST /api/projects/{pid}/sessions             start a conversation
+  GET  /api/projects/{pid}/sessions/{id}        one conversation
+  POST /api/projects/{pid}/sessions/{id}/messages   one turn: the assistant answers
 """
 
 import json
@@ -32,13 +38,20 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel
 
+from .checker import check_in_copy
 from .config import Settings, load_settings
 from .editor import apply_changes, resolve, undo_last
 from .ledger import Ledger, ledger_path
-from .llm import ConfigError, ContextTooLongError, LLMError, Usage, make_llm
+from .llm import ConfigError, ContextTooLongError, LLMError, Reply, Usage, make_llm
 from .pipeline import Result, run
 from .pricing import format_usd, price_for, reply_cost, usage_cost
-from .prompts import PLAN_SYSTEM
+from .prompts import (
+    EXPLAIN_SYSTEM,
+    PLAN_EDIT_SYSTEM,
+    PLAN_SYSTEM,
+    REVIEW_SYSTEM,
+    ROUTE_SYSTEM,
+)
 from .repo_map import build_map, estimate_tokens, list_source_files
 from .selector import normalize_path
 from .textio import read_source
@@ -47,9 +60,13 @@ STATIC_PAGE = Path(__file__).parent / "static" / "index.html"
 MAX_THREADS = 8
 LEVELS = ("easy", "medium", "hard")
 THREAD_STATUSES = ("pending", "done", "skipped")
-PLAN_ID = re.compile(r"^[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$")
+INTENTS = ("change", "refine", "explain", "plan")
+ID_PATTERN = re.compile(r"^[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$")
 MODEL_ERRORS = (ConfigError, LLMError, ContextTooLongError)
 INSTRUCTION_TOKENS = 300  # rough size of the editor's instructions, for the estimate
+HISTORY_MESSAGES = 6  # how many earlier messages each turn sees
+CONTEXT_CHARS = 8000  # per file, when files are shown to explain a question
+SPEND_METHODS = ("tokenwise", "plan", "chat")  # ledger methods that count toward the budget
 
 
 class AskBody(BaseModel):
@@ -82,6 +99,23 @@ class StatusBody(BaseModel):
     status: str
 
 
+class ChatBody(BaseModel):
+    text: str
+    model: str = ""
+
+
+class SessionBody(BaseModel):
+    title: str = ""
+
+
+class TurnBody(BaseModel):
+    text: str
+    intent: str = "auto"  # auto | change | refine | explain | plan
+    model: str = ""
+    files: list[str] = []
+    over_budget: bool = False
+
+
 @dataclass
 class Project:
     id: str
@@ -89,6 +123,7 @@ class Project:
     lock: threading.Lock = field(default_factory=threading.Lock)  # one request at a time
     pending: dict[int, Result] = field(default_factory=dict)  # run id -> proposal to apply
     applied: dict[int, tuple[str, list[str]]] = field(default_factory=dict)  # for commit
+    diffs: dict[int, tuple[str, str]] = field(default_factory=dict)  # run id -> request, diff
 
 
 def project_ids(roots: list[Path | str]) -> dict[str, Path]:
@@ -104,15 +139,26 @@ def project_ids(roots: list[Path | str]) -> dict[str, Path]:
     return ids
 
 
+def new_id(now: datetime | None = None) -> str:
+    now = now or datetime.now()
+    return f"{now:%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
+
+
+def parse_json(text: str, opening: str):
+    """The first JSON object ("{") or array ("[") in a reply, or None."""
+    pattern = r"\{.*\}" if opening == "{" else r"\[.*\]"
+    match = re.search(pattern, text, re.S)
+    if not match:
+        return None
+    try:
+        return json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return None
+
+
 def parse_plan(text: str, files: list[str]) -> list[dict]:
     """Work threads from the planner's reply. Unknown files are dropped; bad items are skipped."""
-    match = re.search(r"\[.*\]", text, re.S)
-    if not match:
-        return []
-    try:
-        items = json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return []
+    items = parse_json(text, "[")
     if not isinstance(items, list):
         return []
     known = set(files)
@@ -166,7 +212,7 @@ def save_plan(settings: Settings, plan: dict) -> None:
 
 def load_plan(settings: Settings, plan_id: str) -> dict:
     path = plan_dir(settings) / f"{plan_id}.json"
-    if not PLAN_ID.match(plan_id) or not path.exists():
+    if not ID_PATTERN.match(plan_id) or not path.exists():
         raise HTTPException(404, "Bu plan bulunamadı.")
     return json.loads(path.read_text("utf-8"))
 
@@ -201,6 +247,77 @@ def plan_markdown(plan: dict) -> str:
         if t["check"]:
             lines += [f"Kontrol: `{t['check']}`", ""]
     return "\n".join(lines)
+
+
+def sessions_dir(settings: Settings) -> Path:
+    return settings.state_dir / "sessions"
+
+
+def new_session(title: str) -> dict:
+    now = datetime.now()
+    return {
+        "id": new_id(now),
+        "title": (title.strip() or "Yeni oturum")[:60],
+        "created": now.isoformat(timespec="seconds"),
+        "messages": [],
+        "pending": None,  # a question waiting for the user's answer
+        "last_proposal": None,  # what "düzelt" refers to
+    }
+
+
+def save_session(settings: Settings, session: dict) -> None:
+    directory = sessions_dir(settings)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{session['id']}.json").write_text(
+        json.dumps(session, ensure_ascii=False, indent=2), "utf-8"
+    )
+
+
+def load_session(settings: Settings, session_id: str) -> dict:
+    path = sessions_dir(settings) / f"{session_id}.json"
+    if not ID_PATTERN.match(session_id) or not path.exists():
+        raise HTTPException(404, "Bu oturum bulunamadı.")
+    return json.loads(path.read_text("utf-8"))
+
+
+def session_summaries(settings: Settings) -> list[dict]:
+    if not sessions_dir(settings).exists():
+        return []
+    sessions = [json.loads(p.read_text("utf-8")) for p in sessions_dir(settings).glob("*.json")]
+    sessions.sort(key=lambda s: s["id"], reverse=True)
+    return [
+        {"id": s["id"], "title": s["title"], "created": s["created"], "count": len(s["messages"])}
+        for s in sessions
+    ]
+
+
+def message(role: str, kind: str, content: str, **extra) -> dict:
+    return {
+        "role": role,
+        "kind": kind,
+        "content": content,
+        "created": datetime.now().isoformat(timespec="seconds"),
+        **extra,
+    }
+
+
+def history_text(messages: list[dict]) -> str:
+    recent = messages[-HISTORY_MESSAGES:]
+    return "\n".join(f"{m['role']} ({m['kind']}): {m['content'][:300]}" for m in recent)
+
+
+def read_context(root: Path, files: list[str]) -> str:
+    return "\n\n".join(
+        f"{f}:\n```\n{read_source(root / f, strict=False)[:CONTEXT_CHARS]}\n```" for f in files[:4]
+    )
+
+
+def record_reply(settings: Settings, text: str, reply: Reply, method: str = "chat") -> None:
+    ledger = Ledger(ledger_path(settings))
+    try:
+        ledger.record(Result(request=text, replies=[reply], prices=settings.prices), method)
+    finally:
+        ledger.close()
 
 
 def is_git_repo(root: Path) -> bool:
@@ -244,7 +361,7 @@ def create_app(roots, llm_factory=None, token: str = "") -> FastAPI:
     def spent_last_week(settings: Settings) -> float:
         ledger = Ledger(ledger_path(settings))
         try:
-            return ledger.summary(7)["cost_usd"] + ledger.summary(7, method="plan")["cost_usd"]
+            return sum(ledger.summary(7, method=m)["cost_usd"] for m in SPEND_METHODS)
         finally:
             ledger.close()
 
@@ -252,6 +369,114 @@ def create_app(roots, llm_factory=None, token: str = "") -> FastAPI:
         spent = spent_last_week(settings)
         limit = settings.budget_usd_week
         return (spent, limit) if limit and spent >= limit else None
+
+    def cheap_model(settings: Settings) -> str:
+        return settings.models[0]
+
+    def middle_model(settings: Settings) -> str:
+        return settings.models[min(1, len(settings.models) - 1)]
+
+    # --- the steps a turn can take -------------------------------------------------------
+
+    def propose(proj: Project, settings: Settings, request: str, model: str, files: list[str]):
+        """One change proposal. Kept in memory so it can be applied, committed or reviewed."""
+        result = run(request, settings, factory(settings), model, files or None)
+        ledger = Ledger(ledger_path(settings))
+        try:
+            run_id = ledger.record(result)
+        finally:
+            ledger.close()
+        if result.changes:
+            proj.pending[run_id] = result
+            proj.diffs[run_id] = (request, "\n".join(c.diff for c in result.changes))
+        return run_id, result
+
+    def classify(settings: Settings, text: str, history: str, files: list[str], has_proposal):
+        """Asks the cheapest model what the user wants and whether anything essential is missing."""
+        reply = factory(settings).complete(
+            model=cheap_model(settings),
+            system=ROUTE_SYSTEM.format(
+                history=history or "(yok)", files=", ".join(files[:80]) or "(yok)"
+            ),
+            prompt=text,
+            max_tokens=200,
+        )
+        reply.role = "router"
+        record_reply(settings, text, reply)
+        data = parse_json(reply.text, "{") or {}
+        intent = data.get("intent") if data.get("intent") in INTENTS else "change"
+        if intent == "refine" and not has_proposal:
+            intent = "change"
+        questions = [str(q).strip() for q in data.get("questions") or [] if str(q).strip()][:3]
+        ready = data.get("ready") is not False or not questions
+        return intent, ready, questions
+
+    def explain(settings: Settings, text: str, history: str, context: str) -> str:
+        reply = factory(settings).complete(
+            model=middle_model(settings),
+            system=EXPLAIN_SYSTEM.format(history=history or "(yok)", context=context),
+            prompt=text,
+            max_tokens=1200,
+        )
+        reply.role = "explainer"
+        record_reply(settings, text, reply)
+        return reply.text.strip()
+
+    def plan_core(settings: Settings, goal: str, model: str) -> dict:
+        files = list_source_files(settings)
+        model = model or middle_model(settings)
+        # The planner reads the whole map, so it is the middle rung: smarter than the selector,
+        # cheaper than the top model.
+        system = PLAN_SYSTEM.format(max_threads=MAX_THREADS, repo_map=build_map(settings, files))
+        reply = factory(settings).complete(model=model, system=system, prompt=goal, max_tokens=2000)
+        reply.role = "planner"
+        record_reply(settings, goal, reply, "plan")
+        threads = parse_plan(reply.text, files)
+        if not threads:
+            raise HTTPException(
+                502, "Model geçerli bir iş listesi üretemedi. Hedefi biraz daha ayrıntılı yaz."
+            )
+        now = datetime.now()
+        record = {
+            "id": new_id(now),
+            "goal": goal,
+            "model": model,
+            "created": now.isoformat(timespec="seconds"),
+            "cost_usd": reply_cost(reply, settings.prices),
+            "threads": threads,
+        }
+        save_plan(settings, record)
+        return record
+
+    def plan_edit_core(settings: Settings, record: dict, instruction: str, model: str) -> dict:
+        files = list_source_files(settings)
+        current = [
+            {k: t[k] for k in ("title", "prompt", "files", "check", "level", "depends_on")}
+            for t in record["threads"]
+        ]
+        reply = factory(settings).complete(
+            model=model or middle_model(settings),
+            system=PLAN_EDIT_SYSTEM.format(
+                current=json.dumps(current, ensure_ascii=False, indent=1),
+                repo_map=build_map(settings, files),
+                max_threads=MAX_THREADS,
+            ),
+            prompt=instruction,
+            max_tokens=2500,
+        )
+        reply.role = "planner"
+        record_reply(settings, instruction, reply)
+        threads = parse_plan(reply.text, files)
+        if not threads:
+            raise HTTPException(502, "Plan düzenlenemedi. Talimatı daha açık yaz.")
+        old_status = {t["title"]: t["status"] for t in record["threads"]}
+        for t in threads:  # threads kept under the same title keep their status
+            t["status"] = old_status.get(t["title"], "pending")
+        record["threads"] = threads
+        save_plan(settings, record)
+        return record
+
+    # --- routes --------------------------------------------------------------------------
 
     @app.get("/")
     def index() -> FileResponse:
@@ -296,7 +521,7 @@ def create_app(roots, llm_factory=None, token: str = "") -> FastAPI:
             map_tokens + files_tokens + estimate_tokens(body.request) + INSTRUCTION_TOKENS
         )
         # Rough: input tokens at the cheapest model's price. Output is not counted.
-        est = usage_cost(Usage(input_tokens, 0), price_for(settings.models[0], settings.prices))
+        est = usage_cost(Usage(input_tokens, 0), price_for(cheap_model(settings), settings.prices))
         return {
             "input_tokens": input_tokens,
             "map_tokens": map_tokens,
@@ -320,18 +545,9 @@ def create_app(roots, llm_factory=None, token: str = "") -> FastAPI:
             if body.check:
                 settings.check = body.check
             try:
-                result = run(
-                    body.request, settings, factory(settings), body.model, body.files or None
-                )
+                run_id, result = propose(proj, settings, body.request, body.model, body.files)
             except MODEL_ERRORS as exc:
                 raise HTTPException(400, str(exc)) from None
-            ledger = Ledger(ledger_path(settings))
-            try:
-                run_id = ledger.record(result)
-            finally:
-                ledger.close()
-            if result.changes:
-                proj.pending[run_id] = result
             return {"run_id": run_id, **result.to_dict()}
 
     @app.post("/api/projects/{pid}/apply")
@@ -360,7 +576,15 @@ def create_app(roots, llm_factory=None, token: str = "") -> FastAPI:
                 ledger.close()
             del proj.pending[body.run_id]
             proj.applied[body.run_id] = (result.request, paths)
-            return {"applied": paths}
+            check = None
+            if settings.check:  # the project's tests, now that the change is in place
+                outcome = check_in_copy(settings, [], settings.check)
+                check = {
+                    "passed": outcome.passed,
+                    "skipped": outcome.skipped,
+                    "output": outcome.output[-2000:],
+                }
+            return {"applied": paths, "check": check}
 
     @app.post("/api/projects/{pid}/undo")
     def undo(pid: str) -> dict:
@@ -380,9 +604,9 @@ def create_app(roots, llm_factory=None, token: str = "") -> FastAPI:
             if not is_git_repo(proj.root):
                 raise HTTPException(400, "Proje bir git deposu değil.")
             request, paths = proj.applied[body.run_id]
-            message = "tokenwise: " + " ".join(request.split())[:72]
+            message_text = "tokenwise: " + " ".join(request.split())[:72]
             # Only the paths tokenwise changed go into the commit, nothing else staged.
-            for args in (["add", "--", *paths], ["commit", "-m", message, "--", *paths]):
+            for args in (["add", "--", *paths], ["commit", "-m", message_text, "--", *paths]):
                 done = subprocess.run(
                     ["git", "-C", str(proj.root), *args], capture_output=True, text=True
                 )
@@ -394,7 +618,34 @@ def create_app(roots, llm_factory=None, token: str = "") -> FastAPI:
                 text=True,
             ).stdout.strip()
             del proj.applied[body.run_id]
-            return {"commit": sha, "message": message}
+            return {"commit": sha, "message": message_text}
+
+    @app.post("/api/projects/{pid}/runs/{run_id}/review")
+    def review(pid: str, run_id: int) -> dict:
+        proj = project(pid)
+        with proj.lock:
+            found = proj.diffs.get(run_id)
+            if found is None:
+                raise HTTPException(404, "Bu öneri artık bellekte değil. İsteği yeniden gönder.")
+            settings = load_settings(proj.root)
+            request, diff = found
+            model = middle_model(settings)
+            try:
+                reply = factory(settings).complete(
+                    model=model,
+                    system=REVIEW_SYSTEM,
+                    prompt=f"İstek: {request}\n\nDiff:\n{diff[:12000]}",
+                    max_tokens=600,
+                )
+            except MODEL_ERRORS as exc:
+                raise HTTPException(400, str(exc)) from None
+            reply.role = "reviewer"
+            record_reply(settings, request, reply)
+            return {
+                "review": reply.text.strip(),
+                "model": model,
+                "cost_usd": reply_cost(reply, settings.prices),
+            }
 
     @app.post("/api/projects/{pid}/plan")
     def plan(pid: str, body: PlanBody) -> dict:
@@ -407,43 +658,10 @@ def create_app(roots, llm_factory=None, token: str = "") -> FastAPI:
                 raise HTTPException(
                     409, f"Haftalık bütçe doldu: {format_usd(spent)} / {format_usd(limit)}."
                 )
-            files = list_source_files(settings)
-            # The planner reads the whole map, so it is the middle rung: smarter than the
-            # selector, cheaper than the top model. The page can choose another.
-            model = body.model or settings.models[min(1, len(settings.models) - 1)]
-            system = PLAN_SYSTEM.format(
-                max_threads=MAX_THREADS, repo_map=build_map(settings, files)
-            )
             try:
-                reply = factory(settings).complete(
-                    model=model, system=system, prompt=body.goal, max_tokens=2000
-                )
+                return plan_core(settings, body.goal, body.model)
             except MODEL_ERRORS as exc:
                 raise HTTPException(400, str(exc)) from None
-            reply.role = "planner"
-            ledger = Ledger(ledger_path(settings))
-            try:
-                ledger.record(
-                    Result(request=body.goal, replies=[reply], prices=settings.prices), "plan"
-                )
-            finally:
-                ledger.close()
-            threads = parse_plan(reply.text, files)
-            if not threads:
-                raise HTTPException(
-                    502, "Model geçerli bir iş listesi üretemedi. Hedefi biraz daha ayrıntılı yaz."
-                )
-            now = datetime.now()
-            record = {
-                "id": f"{now:%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}",
-                "goal": body.goal,
-                "model": model,
-                "created": now.isoformat(timespec="seconds"),
-                "cost_usd": reply_cost(reply, settings.prices),
-                "threads": threads,
-            }
-            save_plan(settings, record)
-            return record
 
     @app.get("/api/projects/{pid}/plans")
     def plans(pid: str) -> list[dict]:
@@ -452,6 +670,17 @@ def create_app(roots, llm_factory=None, token: str = "") -> FastAPI:
     @app.get("/api/projects/{pid}/plans/{plan_id}")
     def get_plan(pid: str, plan_id: str) -> dict:
         return load_plan(load_settings(project(pid).root), plan_id)
+
+    @app.post("/api/projects/{pid}/plans/{plan_id}/chat")
+    def plan_chat(pid: str, plan_id: str, body: ChatBody) -> dict:
+        proj = project(pid)
+        with proj.lock:
+            settings = load_settings(proj.root)
+            record = load_plan(settings, plan_id)
+            try:
+                return plan_edit_core(settings, record, body.text, body.model)
+            except MODEL_ERRORS as exc:
+                raise HTTPException(400, str(exc)) from None
 
     @app.put("/api/projects/{pid}/plans/{plan_id}/threads/{index}")
     def set_status(pid: str, plan_id: str, index: int, body: StatusBody) -> dict:
@@ -471,5 +700,134 @@ def create_app(roots, llm_factory=None, token: str = "") -> FastAPI:
     def export(pid: str, plan_id: str) -> PlainTextResponse:
         record = load_plan(load_settings(project(pid).root), plan_id)
         return PlainTextResponse(plan_markdown(record), media_type="text/markdown")
+
+    @app.get("/api/projects/{pid}/sessions")
+    def sessions(pid: str) -> list[dict]:
+        return session_summaries(load_settings(project(pid).root))
+
+    @app.post("/api/projects/{pid}/sessions")
+    def start_session(pid: str, body: SessionBody) -> dict:
+        proj = project(pid)
+        with proj.lock:
+            settings = load_settings(proj.root)
+            session = new_session(body.title)
+            save_session(settings, session)
+            return session
+
+    @app.get("/api/projects/{pid}/sessions/{session_id}")
+    def get_session(pid: str, session_id: str) -> dict:
+        return load_session(load_settings(project(pid).root), session_id)
+
+    @app.post("/api/projects/{pid}/sessions/{session_id}/messages")
+    def turn(pid: str, session_id: str, body: TurnBody) -> dict:
+        """One turn of the conversation: the assistant decides what to do and answers."""
+        proj = project(pid)
+        with proj.lock:
+            settings = load_settings(proj.root)
+            session = load_session(settings, session_id)
+            blocked = over_budget(settings)
+            if blocked and not body.over_budget:
+                spent, limit = blocked
+                raise HTTPException(
+                    409, f"Haftalık bütçe doldu: {format_usd(spent)} / {format_usd(limit)}."
+                )
+            if body.intent not in ("auto", *INTENTS):
+                raise HTTPException(400, "Niyet auto, change, refine, explain ya da plan olmalı.")
+
+            all_files = list_source_files(settings)
+            user_text = body.text.strip()
+            new_messages = [message("user", "text", user_text)]
+            history = history_text(session["messages"])
+            last = session.get("last_proposal")
+            pending = session.get("pending")
+            try:
+                if pending and body.intent == "auto":  # this message answers the questions
+                    text, intent, ready, questions = (
+                        f"{pending['text']}\nEk bilgi: {user_text}",
+                        pending["intent"],
+                        True,
+                        [],
+                    )
+                    session["pending"] = None
+                elif body.intent == "auto":
+                    text = user_text
+                    intent, ready, questions = classify(
+                        settings, text, history, all_files, last is not None
+                    )
+                    session["pending"] = None
+                else:
+                    text, intent, ready, questions = user_text, body.intent, True, []
+                    if intent == "refine" and last is None:
+                        intent = "change"
+                    session["pending"] = None
+
+                if not ready:
+                    session["pending"] = {
+                        "text": pending["text"] if pending else user_text,
+                        "intent": intent,
+                    }
+                    new_messages.append(
+                        message(
+                            "assistant",
+                            "question",
+                            "Önce şunları netleştirelim:",
+                            questions=questions,
+                        )
+                    )
+                elif intent == "explain":
+                    files = body.files or (last["files"] if last else [])
+                    context = (
+                        read_context(proj.root, files) if files else build_map(settings, all_files)
+                    )
+                    answer = explain(settings, text, history, context[: CONTEXT_CHARS * 2])
+                    new_messages.append(message("assistant", "explain", answer))
+                elif intent == "plan":
+                    record = plan_core(settings, text, body.model)
+                    new_messages.append(
+                        message(
+                            "assistant",
+                            "plan",
+                            f"{len(record['threads'])} iş parçacığına ayırdım.",
+                            plan_id=record["id"],
+                        )
+                    )
+                else:
+                    request, files = text, body.files
+                    if intent == "refine" and last is not None:
+                        request = (
+                            f"{last['request']}\n\nÖnceki öneri şu değişikliği yaptı:\n"
+                            f"{last['diff']}\n\nKullanıcının düzeltme isteği: {text}\n"
+                            "Bu düzeltmeyi uygula; öneriden doğru kalan kısımları koru."
+                        )
+                        files = last["files"]
+                    run_id, result = propose(proj, settings, request, body.model, files)
+                    if result.changes:
+                        session["last_proposal"] = {
+                            "run_id": run_id,
+                            "request": request,
+                            "files": result.files,
+                            "diff": proj.diffs[run_id][1][:8000],
+                        }
+                        summary = f"{len(result.changes)} dosyada değişiklik önerildi."
+                    else:
+                        summary = result.error or "Değişiklik çıkmadı."
+                    new_messages.append(
+                        message(
+                            "assistant",
+                            "proposal",
+                            summary,
+                            run_id=run_id,
+                            data={"run_id": run_id, **result.to_dict()},
+                        )
+                    )
+            except MODEL_ERRORS as exc:
+                new_messages.append(message("assistant", "error", str(exc)))
+
+            session["messages"] += new_messages
+            save_session(settings, session)
+            return {
+                "messages": new_messages,
+                "intent": intent if "intent" in dir() else body.intent,
+            }
 
     return app

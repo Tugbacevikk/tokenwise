@@ -21,6 +21,16 @@ First release.
   "Planı sırayla çalıştır" runs the threads in order, waiting for Apply or Discard on each.
 - Commit from the page: an applied change can be committed to git, containing only the files
   tokenwise changed.
+- Chat mode in the page works as a conversation kept per project (`.tokenwise/sessions/`). Each
+  message is routed to a question, an explanation, a plan, or a code change. Vague requests get
+  clarifying questions first; the next message answers them. "Düzelt" changes the last proposal
+  without starting over; "İncele" asks a second model to review a proposal.
+- After Apply the project check runs. If it fails, the page offers "Geri al" (undo) and
+  "Hatayla düzelt" (sends the check output back as a correction).
+- Voice: "Sesle yaz" dictates into the input (Turkish, where the browser supports it);
+  "yanıtı sesli oku" reads replies aloud.
+- Plan chat: a plan can be changed with an instruction. Threads that keep their title keep their
+  status.
 - `pipeline.run(files=...)`: the caller can name the files, skipping the selector model call.
 - CI runs the tests on Windows too.
 - The router no longer treats topic nouns (`cache`, `database`, `schema`, `protocol`) as a sign
