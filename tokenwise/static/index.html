@@ -85,6 +85,17 @@
   .pre { white-space: pre-wrap; }
   .plan-link.on { font-weight: 600; border-color: var(--accent); }
   .q { margin: 6px 0 0; }
+  .score { font-size: 28px; font-weight: 600; line-height: 1.1; }
+  .sev { font-size: 11px; padding: 1px 7px; border-radius: 9px; margin-right: 6px; }
+  .sev.high { background: var(--del); color: var(--del-text); }
+  .sev.medium { background: #fbf1dc; color: var(--warn); }
+  .sev.low { background: var(--panel); color: var(--muted); }
+  .finding { border-top: 1px solid var(--line); padding: 8px 0; }
+  .finding:first-of-type { border-top: 0; }
+  table.risk { border-collapse: collapse; width: 100%; font-size: 13px; margin-top: 8px; }
+  table.risk td, table.risk th { border-bottom: 1px solid var(--line); padding: 6px 8px; text-align: left; vertical-align: top; }
+  .spark { display: flex; gap: 2px; align-items: flex-end; height: 28px; margin-top: 6px; }
+  .spark div { flex: 1; background: var(--accent); opacity: .55; border-radius: 2px 2px 0 0; }
 </style>
 </head>
 <body>
@@ -102,6 +113,21 @@
   <div>
     <h2>Maliyet (son 7 gün)</h2>
     <div id="costs" class="muted"></div>
+  </div>
+  <div>
+    <h2>Sağlık (RepoDoctor)</h2>
+    <div class="score" id="health-score">–</div>
+    <div class="muted" id="health-sub">Henüz tarama yok.</div>
+    <div class="spark" id="health-trend"></div>
+    <div class="btns">
+      <button id="scan-btn">Tara</button>
+      <button id="findings-btn">Bulgular</button>
+    </div>
+  </div>
+  <div>
+    <h2>PR riski (ReleaseGuard)</h2>
+    <input type="text" id="risk-base" placeholder="Temel dal (boş: main)">
+    <div class="btns"><button id="risk-btn">Riski hesapla</button></div>
   </div>
   <div>
     <h2>Sohbetler</h2>
@@ -174,6 +200,7 @@ let busy = false;
 let picked = [];
 let sid = null;
 let speakReplies = false;
+let pendingFinding = null;
 
 function el(tag, cls, text) {
   const node = document.createElement(tag);
@@ -328,6 +355,7 @@ function resultView(res) {
       }
       settle("applied");
       refresh();
+      if (pendingFinding) verifyFinding(pendingFinding, box);
     } catch (e) {
       box.appendChild(el("div", "err", e.message));
     }
@@ -580,6 +608,147 @@ async function review(runId, box) {
   }
 }
 
+async function loadHealth() {
+  const h = await api(P("/health?limit=100"));
+  const last = h.latest;
+  $("health-score").textContent = last ? `${last.overall}/100` : "–";
+  $("health-sub").textContent = last
+    ? `${last.open_findings} açık bulgu · ${last.ts.slice(0, 10)}${last.commit_sha ? " · " + last.commit_sha : ""}`
+    : "Henüz tarama yok.";
+  $("health-trend").textContent = "";
+  for (const t of h.trend) {
+    const bar = el("div");
+    bar.style.height = Math.max(2, (t.overall / 100) * 28) + "px";
+    bar.title = `${t.ts.slice(0, 16)} · ${t.overall}`;
+    $("health-trend").appendChild(bar);
+  }
+  return h;
+}
+
+async function runScan() {
+  const box = addAssistant();
+  box.appendChild(el("div", "muted", "Proje taranıyor…"));
+  try {
+    const r = await api(P("/health/scan"), {});
+    box.textContent = "";
+    box.appendChild(el("div", "", `Sağlık ${r.scores.overall}/100 · ${r.open} açık · ${r.new} yeni · ${r.resolved} çözüldü · ${r.files} dosya · ${r.seconds} sn`));
+    const cats = Object.entries(r.scores).filter(([k]) => k !== "overall").map(([k, v]) => `${k} ${v}`).join(" · ");
+    box.appendChild(el("div", "muted", cats));
+    box.appendChild(button("Bulguları göster", showFindings));
+    await loadHealth();
+  } catch (e) {
+    box.textContent = "";
+    box.appendChild(el("div", "err", e.message));
+  }
+}
+
+async function showFindings() {
+  const h = await loadHealth();
+  const box = addAssistant();
+  if (!h.findings.length) {
+    box.appendChild(el("div", "muted", h.latest ? "Açık bulgu yok." : "Önce Tara."));
+    return;
+  }
+  box.appendChild(el("div", "", `Öncelik sırasına göre ${h.findings.length} açık bulgu (önem × dosyanın değişme ve bozulma sıklığı)`));
+  for (const f of h.findings) {
+    const row = el("div", "finding");
+    const head = el("div");
+    head.append(el("span", `sev ${f.severity}`, f.severity), el("span", "", `#${f.id} ${f.title}`));
+    row.appendChild(head);
+    const where = f.line ? `${f.file}:${f.line}` : f.file;
+    const extra = [f.category, f.churn ? `${f.churn} commit` : "", f.fixes ? `${f.fixes} düzeltme` : ""].filter(Boolean).join(" · ");
+    row.appendChild(el("div", "muted", `${where} · ${extra}`));
+    const btns = el("div", "btns");
+    btns.append(
+      button("Agent ile düzelt", () => fixFinding(f.id), true),
+      button("Yoksay", async (ev) => {
+        await api(P(`/findings/${f.id}/status`), { status: "ignored" });
+        row.remove();
+        loadHealth();
+      }),
+    );
+    row.appendChild(btns);
+    box.appendChild(row);
+  }
+}
+
+async function fixFinding(id) {
+  const task = await api(P(`/findings/${id}/task`));
+  pendingFinding = task.intent === "change" ? id : null;
+  picked = task.files.filter((f) => project.files.includes(f));
+  renderChips();
+  $("input").value = task.request;
+  setChat(task.intent);
+  await send();
+}
+
+async function verifyFinding(id, box) {
+  const note = el("div", "muted", `Bulgu #${id} doğrulanıyor (yeniden tarama)…`);
+  box.appendChild(note);
+  try {
+    const r = await api(P(`/findings/${id}/verify`), {});
+    note.className = r.resolved ? "ok" : "warn";
+    note.textContent = r.resolved ? `Doğrulandı: bulgu #${id} artık görünmüyor.` : `Bulgu #${id} hâlâ görünüyor.`;
+    pendingFinding = null;
+    loadHealth();
+  } catch (e) {
+    note.className = "err";
+    note.textContent = e.message;
+  }
+}
+
+async function runRisk() {
+  const box = addAssistant();
+  box.appendChild(el("div", "muted", "Değişiklik analiz ediliyor…"));
+  try {
+    const r = await api(P("/risk"), { base: $("risk-base").value });
+    box.textContent = "";
+    const cls = r.level === "yüksek" ? "err" : r.level === "orta" ? "warn" : "ok";
+    box.appendChild(el("div", cls, `Risk ${r.score}/100 (${r.level})`));
+    box.appendChild(el("div", "muted", `temel ${r.base} · ${r.changed.length} kaynak dosya · +${r.lines_added} −${r.lines_removed} · ${r.commits} commit`));
+    if (!r.changed.length) return;
+    const table = el("table", "risk");
+    const head = el("tr");
+    for (const h of ["Sinyal", "Puan", "Güven", "Kanıt"]) head.appendChild(el("th", "", h));
+    table.appendChild(head);
+    for (const sig of r.signals) {
+      const tr = el("tr");
+      tr.append(el("td", "", sig.label), el("td", "", String(sig.points)), el("td", "", sig.confidence));
+      const ev = el("td");
+      for (const reason of sig.reasons) ev.appendChild(el("div", "", reason.replaceAll("`", "")));
+      tr.appendChild(ev);
+      table.appendChild(tr);
+    }
+    box.appendChild(table);
+    if (r.checklist.length) {
+      box.appendChild(el("div", "file", "Yayın öncesi kontrol listesi"));
+      for (const item of r.checklist) box.appendChild(el("div", "", "☐ " + item.replaceAll("`", "")));
+    }
+    if (r.suggestions.length) {
+      box.appendChild(el("div", "file", "Agent'ın üstlenebileceği işler"));
+      const btns = el("div", "btns");
+      for (const sug of r.suggestions) {
+        btns.appendChild(button(sug.title, async () => {
+          pendingFinding = null;
+          picked = sug.files.filter((f) => project.files.includes(f));
+          renderChips();
+          $("input").value = sug.request;
+          setChat("change");
+          await send();
+        }));
+      }
+      box.appendChild(btns);
+    }
+    const md = el("details");
+    md.appendChild(el("summary", "muted", "PR yorumu için Markdown"));
+    md.appendChild(el("pre", "", r.markdown));
+    box.appendChild(md);
+  } catch (e) {
+    box.textContent = "";
+    box.appendChild(el("div", "err", e.message));
+  }
+}
+
 async function estimate() {
   try {
     const e = await api(P("/estimate"), { request: $("input").value, files: picked });
@@ -652,6 +821,7 @@ async function loadProject(id) {
   }
   await loadSessions();
   await refresh();
+  loadHealth().catch(() => {});
 }
 
 async function refresh() {
@@ -721,6 +891,9 @@ $("undo").onclick = async () => {
 };
 $("send").onclick = send;
 $("estimate-btn").onclick = estimate;
+$("scan-btn").onclick = runScan;
+$("findings-btn").onclick = showFindings;
+$("risk-btn").onclick = runRisk;
 $("mode-chat").onclick = () => setMode("chat");
 $("mode-change").onclick = () => setMode("change");
 $("new-session").onclick = () => { sid = null; log.textContent = ""; loadSessions(); };

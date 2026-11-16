@@ -41,6 +41,9 @@ from pydantic import BaseModel
 from .checker import check_in_copy
 from .config import Settings, load_settings
 from .editor import apply_changes, resolve, undo_last
+from .health import HealthStore, health_path, ranked, task_for, verify_fixed
+from .health import scan as run_scan
+from .history import load_history
 from .ledger import Ledger, ledger_path
 from .llm import ConfigError, ContextTooLongError, LLMError, Reply, Usage, make_llm
 from .pipeline import Result, run
@@ -52,6 +55,7 @@ from .prompts import (
     REVIEW_SYSTEM,
     ROUTE_SYSTEM,
 )
+from .release import GuardError, assess
 from .repo_map import build_map, estimate_tokens, list_source_files
 from .selector import normalize_path
 from .textio import read_source
@@ -93,6 +97,10 @@ class CommitBody(BaseModel):
 class EstimateBody(BaseModel):
     request: str = ""
     files: list[str] = []
+
+
+class RiskBody(BaseModel):
+    base: str = ""
 
 
 class StatusBody(BaseModel):
@@ -504,6 +512,67 @@ def create_app(roots, llm_factory=None, token: str = "") -> FastAPI:
                 "limit_usd": settings.budget_usd_week,
             },
         }
+
+    # --- RepoDoctor and ReleaseGuard -----------------------------------------------------
+
+    @app.post("/api/projects/{pid}/health/scan")
+    def health_scan(pid: str) -> dict:
+        proj = project(pid)
+        with proj.lock:
+            return run_scan(load_settings(proj.root)).__dict__
+
+    @app.get("/api/projects/{pid}/health")
+    def health_info(pid: str, limit: int = 50) -> dict:
+        settings = load_settings(project(pid).root)
+        with HealthStore(health_path(settings)) as store:
+            snaps = store.snapshots(30)
+            rows = store.open_findings()
+        rows = ranked(rows, load_history(settings.root))[: max(1, min(limit, 500))]
+        return {
+            "latest": snaps[-1] if snaps else None,
+            "trend": [{"ts": s["ts"], "overall": s["overall"]} for s in snaps],
+            "findings": rows,
+        }
+
+    @app.post("/api/projects/{pid}/findings/{finding_id}/status")
+    def finding_status(pid: str, finding_id: int, body: StatusBody) -> dict:
+        settings = load_settings(project(pid).root)
+        if body.status not in ("open", "ignored"):
+            raise HTTPException(400, "Durum open ya da ignored olmalı.")
+        with HealthStore(health_path(settings)) as store:
+            row = store.set_status(finding_id, body.status)
+        if row is None:
+            raise HTTPException(404, "Bulgu yok.")
+        return row
+
+    @app.get("/api/projects/{pid}/findings/{finding_id}/task")
+    def finding_task(pid: str, finding_id: int) -> dict:
+        settings = load_settings(project(pid).root)
+        with HealthStore(health_path(settings)) as store:
+            row = store.get(finding_id)
+        if row is None:
+            raise HTTPException(404, "Bulgu yok.")
+        return {**task_for(row), "finding": row}
+
+    @app.post("/api/projects/{pid}/findings/{finding_id}/verify")
+    def finding_verify(pid: str, finding_id: int) -> dict:
+        proj = project(pid)
+        settings = load_settings(proj.root)
+        with HealthStore(health_path(settings)) as store:
+            row = store.get(finding_id)
+        if row is None:
+            raise HTTPException(404, "Bulgu yok.")
+        with proj.lock:
+            gone = verify_fixed(settings, row)
+        return {"finding_id": finding_id, "resolved": gone}
+
+    @app.post("/api/projects/{pid}/risk")
+    def risk(pid: str, body: RiskBody) -> dict:
+        settings = load_settings(project(pid).root)
+        try:
+            return assess(settings, body.base.strip()).to_dict()
+        except GuardError as exc:
+            raise HTTPException(400, str(exc)) from exc
 
     @app.get("/api/projects/{pid}/costs")
     def costs(pid: str, days: int = 7) -> dict:

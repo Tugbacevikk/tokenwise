@@ -33,6 +33,20 @@ First release.
   status.
 - `pipeline.run(files=...)`: the caller can name the files, skipping the selector model call.
 - CI runs the tests on Windows too.
+- One platform, three modules on a shared core. The core (`graph.py`, `history.py`) reads the
+  import graph of Python and JS/TS files and the git history (churn, fix commits, files that
+  change together, AI co-authored commits).
+- RepoDoctor: `tokenwise scan` runs deterministic analyzers (complexity, long functions, large
+  files, missing tests, import cycles, shell/eval/unsafe deserialization, hard-coded secrets,
+  TODO density) and keeps findings in `.tokenwise/health.db` with a line-independent
+  fingerprint: open, resolved, reopened or ignored. Category scores and a snapshot per scan.
+  `tokenwise findings` ranks them by severity and hotspot; `--report` prints the weekly report.
+- ReleaseGuard: `tokenwise risk --base main` scores the branch's change on six signals, each
+  with its evidence and confidence, and prints a pre-release checklist and agent tasks
+  (`--format markdown|json`, optional `--fail-above`).
+- `tokenwise fix <id>`: the agent fixes a finding, then a re-scan verifies it is gone. The web
+  page has a health panel, the findings list with one-click fixes and the risk report.
+- `examples/github/tokenwise.yml`: risk report on every pull request, weekly health scan.
 - The router no longer treats topic nouns (`cache`, `database`, `schema`, `protocol`) as a sign
   of a hard change; "add --json to the cache command" now starts below the top model.
 - Files defining a function or class named in the request are added to the selection

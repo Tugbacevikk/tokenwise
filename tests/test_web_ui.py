@@ -138,3 +138,30 @@ def test_chat_explains_without_editing(project):
     server.should_exit = True
     assert not errors
     assert "return True" in (project / "app" / "auth.py").read_text("utf-8")
+
+
+def test_health_findings_and_risk_in_the_browser(tmp_path):
+    from tests.test_platform import COMPLEX, commit, sh
+
+    sh(tmp_path, "init", "-q", "-b", "main")
+    commit(tmp_path, "start", {"app/core.py": "def f():\n    return 1\n"})
+    (tmp_path / "app" / "rules.py").write_text(COMPLEX)
+    server, url = start(create_app(tmp_path, llm_factory=lambda s: FakeLLM()))
+    with sync_api.sync_playwright() as p:
+        try:
+            browser = p.chromium.launch()
+        except Exception as exc:
+            server.should_exit = True
+            pytest.skip(f"Chromium is not installed: {exc}")
+        page, errors = open_page(browser, url)
+        page.click("#scan-btn")
+        page.wait_for_selector("text=Bulguları göster")
+        assert "/100" in page.inner_text("#health-score")
+        page.click("#findings-btn")
+        page.wait_for_selector("text=Agent ile düzelt")
+        page.fill("#risk-base", "main")
+        page.click("#risk-btn")
+        page.wait_for_selector("text=Yayın öncesi kontrol listesi")
+        browser.close()
+    server.should_exit = True
+    assert not errors

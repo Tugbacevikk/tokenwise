@@ -1,4 +1,5 @@
-"""Command line: tokenwise init | map | ask | apply | undo | report | cache | benchmark."""
+"""Command line: tokenwise init | map | ask | apply | undo | report | cache | benchmark |
+scan | findings | fix | risk | serve."""
 
 from __future__ import annotations
 
@@ -516,6 +517,162 @@ def doctor(root: Path = RootOption) -> None:
         hint = "ollama pull " + missing[0] if settings.provider == "ollama" else "fix `models`"
         _fail(f"{len(missing)} model(s) missing. Download them ({hint}) or change `models`.")
     console.print("[green]All good.[/]")
+
+
+SEVERITY_STYLE = {"high": "red", "medium": "yellow", "low": "dim"}
+
+
+@app.command()
+def scan(
+    root: Path = RootOption,
+    as_json: bool = typer.Option(False, "--json", help="Print the result as JSON."),
+) -> None:
+    """RepoDoctor: analyze the project, track findings over time and score its health."""
+    from .health import scan as run_scan
+
+    settings = load_settings(root)
+    if as_json:
+        result = run_scan(settings)
+        print(json.dumps(result.__dict__))
+        return
+    with console.status("Scanning..."):
+        result = run_scan(settings)
+    table = Table(title=f"Health: {result.scores['overall']}/100")
+    table.add_column("Category")
+    table.add_column("Score", justify="right")
+    for key, value in result.scores.items():
+        if key != "overall":
+            table.add_row(key, str(value))
+    console.print(table)
+    console.print(
+        f"{result.files} files · {result.open} open · [red]{result.new} new[/] · "
+        f"[green]{result.resolved} resolved[/] · {result.reopened} reopened · {result.seconds}s"
+    )
+    console.print("See them with: tokenwise findings · weekly report: tokenwise findings --report")
+
+
+@app.command()
+def findings(
+    root: Path = RootOption,
+    report_md: bool = typer.Option(False, "--report", help="Print the weekly Markdown report."),
+    days: int = typer.Option(7, "--days", help="Report period in days."),
+    status: str = typer.Option("open", "--status", help="open, resolved, ignored or all."),
+    ignore: int = typer.Option(0, "--ignore", help="Mark this finding as ignored."),
+    reopen: int = typer.Option(0, "--reopen", help="Open an ignored finding again."),
+    limit: int = typer.Option(30, "--limit", "-n"),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    """RepoDoctor: list findings by priority (severity x how often the file changes and breaks)."""
+    from .health import HealthStore, health_path, ranked, weekly_report
+    from .history import load_history
+
+    settings = load_settings(root)
+    if report_md:
+        print(weekly_report(settings, days=days), end="")
+        return
+    with HealthStore(health_path(settings)) as store:
+        for finding_id, new_status in ((ignore, "ignored"), (reopen, "open")):
+            if finding_id:
+                if store.set_status(finding_id, new_status) is None:
+                    _fail(f"No finding #{finding_id}.")
+                console.print(f"#{finding_id} → {new_status}")
+                return
+        rows = store.findings(None if status == "all" else status)
+    rows = ranked(rows, load_history(settings.root))[:limit]
+    if as_json:
+        print(json.dumps(rows, ensure_ascii=False))
+        return
+    if not rows:
+        console.print("No findings. Run: tokenwise scan")
+        return
+    table = Table()
+    for column in ("#", "Severity", "Category", "File", "Finding", "Priority"):
+        table.add_column(column)
+    for f in rows:
+        style = SEVERITY_STYLE[f["severity"]]
+        where = f"{f['file']}:{f['line']}" if f["line"] else f["file"]
+        table.add_row(str(f["id"]), f"[{style}]{f['severity']}[/]", f["category"], where,
+                      f["title"], str(f["priority"]))  # fmt: skip
+    console.print(table)
+    console.print("Fix one with: tokenwise fix <#>")
+
+
+@app.command()
+def fix(
+    finding_id: int = typer.Argument(..., help="Finding number from `tokenwise findings`."),
+    root: Path = RootOption,
+    yes: bool = typer.Option(False, "--yes", "-y", help="Apply without asking."),
+    model: str = typer.Option("", "--model", "-m"),
+) -> None:
+    """Agent: turn a finding into a change, apply it, then re-scan to verify it is gone."""
+    from .health import HealthStore, health_path, task_for, verify_fixed
+
+    settings = load_settings(root)
+    with HealthStore(health_path(settings)) as store:
+        finding = store.get(finding_id)
+    if finding is None:
+        _fail(f"No finding #{finding_id}. Run: tokenwise scan")
+    if finding["status"] != "open":
+        _fail(f"Finding #{finding_id} is {finding['status']}.")
+    task = task_for(finding)
+    console.print(f"[bold]#{finding_id}[/] {finding['title']} → {task['request']}")
+    if task["intent"] == "plan":
+        console.print("This needs several steps; plan it in the web page: tokenwise serve")
+    try:
+        ask(request=task["request"], root=root, yes=yes, dry_run=False, model=model,
+            no_cache=False, as_json=False, check="", no_check=False, over_budget=False)  # fmt: skip
+    except typer.Exit as exc:
+        if exc.exit_code:
+            raise
+    with console.status("Verifying..."):
+        gone = verify_fixed(settings, finding)
+    if gone:
+        console.print(f"[green]Verified:[/] finding #{finding_id} no longer appears.")
+    else:
+        console.print(
+            f"[yellow]Finding #{finding_id} still appears[/] (or the change was not applied)."
+        )
+
+
+@app.command()
+def risk(
+    root: Path = RootOption,
+    base: str = typer.Option("", "--base", "-b", help="Base branch; default origin/main or main."),
+    fmt: str = typer.Option("table", "--format", "-f", help="table, markdown or json."),
+    fail_above: int = typer.Option(
+        0, "--fail-above", help="Exit 1 when the score is above this (0 = never fail)."
+    ),
+) -> None:
+    """ReleaseGuard: how risky is this branch's change, with the evidence and a checklist."""
+    from .release import LABELS, GuardError, assess, to_markdown
+
+    settings = load_settings(root)
+    try:
+        report = assess(settings, base)
+    except GuardError as exc:
+        _fail(str(exc), fmt == "json")
+    if fmt == "json":
+        print(json.dumps(report.to_dict(), ensure_ascii=False))
+    elif fmt == "markdown":
+        print(to_markdown(report), end="")
+    else:
+        color = {"yüksek": "red", "orta": "yellow"}.get(report.level, "green")
+        console.print(
+            f"[bold {color}]Risk {report.score}/100 ({report.level})[/] · base {report.base} · "
+            f"{len(report.changed)} files · +{report.lines_added} -{report.lines_removed}"
+        )
+        table = Table()
+        for column in ("Signal", "Points", "Confidence", "Evidence"):
+            table.add_column(column)
+        for s in report.signals:
+            table.add_row(LABELS[s.name], f"{s.points:g}", s.confidence, "\n".join(s.reasons))
+        console.print(table)
+        for item in report.checklist:
+            console.print(f"[ ] {item}")
+        for s in report.suggestions:
+            console.print(f'[dim]Agent:[/] tokenwise ask "{s["request"]}"')
+    if fail_above and report.score > fail_above:
+        raise typer.Exit(1)
 
 
 @app.command()
