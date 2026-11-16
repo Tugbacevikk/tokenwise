@@ -46,3 +46,22 @@ Reply with the complete new content of every file you change or create, each as:
 === FILE: path/to/file.py ===
 <the whole file>
 === END FILE ==="""
+
+
+PLAN_SYSTEM = """You plan work on a coding project. The user describes a goal in plain words. \
+Split it into small work threads. Each thread is one request that tokenwise will carry out.
+
+Project map (file paths with their functions and classes):
+{repo_map}
+
+Reply with ONLY a JSON array, at most {max_threads} items. Each item is an object with:
+- "title": a short title, in Turkish
+- "prompt": the exact request to give tokenwise, in Turkish, one or two sentences. Name the file \
+and the function or class to change, spelled as in the map. Say what the change must do.
+- "files": the project files from the map that the change needs (at most 3)
+- "check": a test command such as "{{python}} -m pytest -q tests/test_x.py", or "" if no test fits
+- "level": "easy", "medium" or "hard"
+- "depends_on": indices (starting at 0) of earlier items that must be done first; [] if none
+
+Rules: each thread changes one thing. Put threads in the order they must run. Use only file \
+paths that appear in the map. Do not add threads for things the goal does not ask for."""

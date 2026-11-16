@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tokenwise</title>
+<style>
+  :root {
+    --bg: #faf9f6; --panel: #f0eee8; --card: #ffffff; --line: #dcd8cf;
+    --text: #22201c; --muted: #7a766c; --accent: #c15f3c; --accent-soft: #f7e6de;
+    --add: #e6f4ea; --add-text: #1d6b34; --del: #fbe9e7; --del-text: #9b2c1f;
+    --ok: #1d6b34; --warn: #8a5a00; --err: #9b2c1f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; height: 100vh; font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--bg); color: var(--text); display: grid; grid-template-columns: 280px 1fr;
+  }
+  aside {
+    background: var(--panel); border-right: 1px solid var(--line); padding: 16px;
+    overflow: auto; display: flex; flex-direction: column; gap: 14px;
+  }
+  aside h1 { font-size: 17px; margin: 0; }
+  aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 4px; }
+  select, input[type=text] {
+    font: inherit; font-size: 14px; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line);
+    background: #fff; color: var(--text); width: 100%;
+  }
+  .files { font: 12px/1.6 ui-monospace, Consolas, monospace; color: var(--muted); white-space: pre-line; word-break: break-all; max-height: 180px; overflow: auto; }
+  .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
+  .bar > div { height: 100%; background: var(--accent); width: 0; }
+  .plan-link { display: block; width: 100%; text-align: left; margin-bottom: 4px; }
+  main { display: flex; flex-direction: column; min-width: 0; }
+  #log { flex: 1; overflow: auto; padding: 24px; display: flex; flex-direction: column; gap: 16px; }
+  .msg { max-width: 880px; width: 100%; margin: 0 auto; }
+  .user { background: var(--accent-soft); border-radius: 14px; padding: 10px 14px; align-self: flex-end; max-width: 70%; white-space: pre-wrap; }
+  .assistant { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .err { color: var(--err); }
+  .file { font: 13px ui-monospace, Consolas, monospace; margin-top: 10px; font-weight: 600; }
+  pre.diff, .sbs {
+    margin: 4px 0 0; padding: 8px 0; background: #fbfaf7; border: 1px solid var(--line);
+    border-radius: 8px; overflow: auto; font: 12.5px/1.5 ui-monospace, Consolas, monospace;
+  }
+  pre.diff div { padding: 0 12px; white-space: pre; }
+  pre.diff .add, .cell.add { background: var(--add); color: var(--add-text); }
+  pre.diff .del, .cell.del { background: var(--del); color: var(--del-text); }
+  pre.diff .hunk { color: var(--muted); }
+  .sbs { display: grid; grid-template-columns: 1fr 1fr; }
+  .cell { white-space: pre; padding: 0 10px; overflow: hidden; min-height: 1.5em; }
+  .cell.empty { background: #f3f1ec; }
+  details { margin-top: 6px; }
+  details pre { white-space: pre-wrap; background: #fbfaf7; border: 1px solid var(--line); border-radius: 8px; padding: 8px; font: 12px/1.5 ui-monospace, Consolas, monospace; max-height: 260px; overflow: auto; }
+  .plan { border: 1px solid var(--accent); border-radius: 14px; padding: 14px; background: #fffdfb; }
+  .plan-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .plan-head h3 { margin: 0; font-size: 16px; flex: 1; }
+  .thread { border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin-top: 10px; background: #fff; }
+  .thread.done { opacity: .6; }
+  .thread.skipped { opacity: .45; }
+  .thread-head { display: flex; gap: 8px; align-items: center; }
+  .num { background: var(--accent-soft); color: var(--accent); border-radius: 50%; width: 22px; height: 22px; display: inline-grid; place-items: center; font-size: 12px; font-weight: 600; }
+  .badge { margin-left: auto; font-size: 11px; padding: 2px 8px; border-radius: 10px; background: var(--panel); color: var(--muted); }
+  pre.prompt { white-space: pre-wrap; background: #fbfaf7; border-radius: 8px; padding: 10px; margin: 8px 0; font: 13.5px/1.5 system-ui, sans-serif; }
+  .btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  button {
+    font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 8px; border: 1px solid var(--line);
+    background: #fff; color: var(--text); cursor: pointer;
+  }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.on { background: var(--text); color: #fff; border-color: var(--text); }
+  button:disabled { opacity: .45; cursor: default; }
+  footer { border-top: 1px solid var(--line); background: var(--bg); padding: 14px 24px 18px; }
+  .composer { max-width: 880px; margin: 0 auto; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .row select { width: auto; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+  .chip { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 2px 4px 2px 10px; font: 12.5px ui-monospace, Consolas, monospace; }
+  .chip button { border: 0; background: none; padding: 0 6px; font-size: 14px; }
+  textarea {
+    width: 100%; min-height: 64px; max-height: 240px; resize: vertical; font: inherit;
+    padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line); background: #fff; margin-top: 8px;
+  }
+  .send { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; gap: 8px; flex-wrap: wrap; }
+  .hint { color: var(--muted); font-size: 12.5px; }
+</style>
+</head>
+<body>
+<aside>
+  <div>
+    <h2>Proje</h2>
+    <select id="project"></select>
+    <div class="muted" id="sub" style="margin-top:6px"></div>
+  </div>
+  <div>
+    <h2>Haftalık bütçe</h2>
+    <div class="bar"><div id="budget-bar"></div></div>
+    <div class="muted" id="budget-text"></div>
+  </div>
+  <div>
+    <h2>Planlar</h2>
+    <div id="plans"></div>
+  </div>
+  <div>
+    <h2>Proje dosyaları</h2>
+    <div class="files" id="files"></div>
+  </div>
+  <div class="btns" style="margin-top:0">
+    <button id="undo">Son değişikliği geri al</button>
+  </div>
+</aside>
+
+<main>
+  <div id="log"></div>
+  <footer>
+    <div class="composer">
+      <div class="row">
+        <button id="mode-change" class="on">Değişiklik iste</button>
+        <button id="mode-plan">Planla</button>
+        <span class="hint">Model:</span>
+        <select id="model"></select>
+        <label class="hint"><input type="checkbox" id="sbs"> yan yana diff</label>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <input type="text" id="pick" list="file-list" placeholder="Dosya ekle (boşsa seçici otomatik seçer)">
+        <datalist id="file-list"></datalist>
+      </div>
+      <div class="chips" id="chips"></div>
+      <textarea id="input" placeholder="Ne değişsin? Örn: login fonksiyonuna şifre uzunluk kontrolü ekle"></textarea>
+      <div class="send">
+        <span class="hint" id="estimate">Enter gönderir, Shift+Enter yeni satır</span>
+        <div class="row">
+          <button id="estimate-btn">Tahmin et</button>
+          <button class="primary" id="send">Gönder</button>
+        </div>
+      </div>
+    </div>
+  </footer>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const log = $("log");
+const TOKEN = (() => {
+  const q = new URLSearchParams(location.search).get("token");
+  if (q) sessionStorage.setItem("tw-token", q);
+  return q || sessionStorage.getItem("tw-token") || "";
+})();
+let pid = null;
+let project = null;
+let mode = "change";
+let busy = false;
+let picked = [];
+
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function button(label, onClick, primary = false) {
+  const b = el("button", primary ? "primary" : "", label);
+  b.onclick = onClick;
+  return b;
+}
+
+async function api(path, body, method) {
+  const opts = { method: method || (body === undefined ? "GET" : "POST"), headers: { "X-Tokenwise-Token": TOKEN } };
+  if (body !== undefined) {
+    opts.headers["Content-Type"] = "application/json";
+    opts.body = JSON.stringify(body);
+  }
+  const res = await fetch(path, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : res.statusText);
+  return data;
+}
+
+const P = (suffix) => `/api/projects/${encodeURIComponent(pid)}${suffix}`;
+const modelValue = () => $("model").value;
+
+function addUser(text) {
+  log.appendChild(el("div", "user", text));
+  log.scrollTop = log.scrollHeight;
+}
+
+function addAssistant() {
+  const box = el("div", "assistant msg");
+  log.appendChild(box);
+  log.scrollTop = log.scrollHeight;
+  return box;
+}
+
+function unifiedView(diff) {
+  const pre = el("pre", "diff");
+  for (const line of diff.split("\n")) {
+    const isAdd = line.startsWith("+") && !line.startsWith("+++");
+    const isDel = line.startsWith("-") && !line.startsWith("---");
+    const cls = isAdd ? "add" : isDel ? "del" : line.startsWith("@@") ? "hunk" : "";
+    pre.appendChild(el("div", cls, line));
+  }
+  return pre;
+}
+
+function sideBySideView(diff) {
+  const wrap = el("div", "sbs");
+  const cell = (text, cls) => el("div", "cell " + cls, text);
+  let removed = [];
+  let added = [];
+  const flush = () => {
+    const n = Math.max(removed.length, added.length);
+    for (let i = 0; i < n; i++) {
+      wrap.appendChild(removed[i] !== undefined ? cell(removed[i], "del") : cell("", "empty"));
+      wrap.appendChild(added[i] !== undefined ? cell(added[i], "add") : cell("", "empty"));
+    }
+    removed = [];
+    added = [];
+  };
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("---") || line.startsWith("+++") || line.startsWith("@@") || line.startsWith("\\")) continue;
+    if (line.startsWith("-")) removed.push(line.slice(1));
+    else if (line.startsWith("+")) added.push(line.slice(1));
+    else {
+      flush();
+      wrap.appendChild(cell(line.slice(1), ""));
+      wrap.appendChild(cell(line.slice(1), ""));
+    }
+  }
+  flush();
+  return wrap;
+}
+
+function diffView(diff) {
+  return $("sbs").checked ? sideBySideView(diff) : unifiedView(diff);
+}
+
+// Shows a proposal. Returns { decided }: a promise that resolves to "applied", "skipped" or "failed".
+function resultView(res) {
+  const box = addAssistant();
+  let settle;
+  const decided = new Promise((resolve) => (settle = resolve));
+  const tokens = res.usage.input + res.usage.output;
+  box.appendChild(el("div", "muted",
+    `${res.difficulty || "-"} · ${res.model || "-"} · ${res.files.length} dosya · ` +
+    `${tokens.toLocaleString("tr-TR")} token · $${res.cost_usd.toFixed(4)}`));
+  if (res.error) box.appendChild(el("div", "err", res.error));
+  if (res.check && res.check.command) {
+    const state = res.check.passed ? ["ok", "Kontrol geçti"] :
+      res.check.passed === false ? ["err", "Kontrol geçmedi"] : ["warn", "Kontrol yapılmadı"];
+    box.appendChild(el("div", state[0], state[1]));
+    if (res.check.output) {
+      const details = el("details");
+      details.appendChild(el("summary", "muted", "Kontrol çıktısı"));
+      details.appendChild(el("pre", "", res.check.output));
+      box.appendChild(details);
+    }
+  }
+  if (!res.ok || !res.changes.length) {
+    settle("failed");
+    return { decided };
+  }
+  for (const c of res.changes) {
+    box.appendChild(el("div", "file", `${c.path}  (+${c.added} −${c.removed})`));
+    box.appendChild(diffView(c.diff));
+  }
+  const row = el("div", "btns");
+  const apply = button("Uygula", async () => {
+    try {
+      await api(P("/apply"), { run_id: res.run_id });
+      apply.disabled = skip.disabled = true;
+      box.appendChild(el("div", "ok", "Uygulandı."));
+      if (project && project.git) {
+        const commitBtn = button("Commit'le", async () => {
+          try {
+            const c = await api(P("/commit"), { run_id: res.run_id });
+            commitBtn.disabled = true;
+            box.appendChild(el("div", "ok", `Commit: ${c.commit} — ${c.message}`));
+          } catch (e) {
+            box.appendChild(el("div", "err", e.message));
+          }
+        });
+        row.appendChild(commitBtn);
+      }
+      settle("applied");
+      refresh();
+    } catch (e) {
+      box.appendChild(el("div", "err", e.message));
+    }
+  }, true);
+  const skip = button("Vazgeç", () => {
+    apply.disabled = skip.disabled = true;
+    settle("skipped");
+  });
+  row.append(apply, skip);
+  box.appendChild(row);
+  return { decided };
+}
+
+function renderPlan(plan) {
+  const box = addAssistant();
+  box.classList.add("plan");
+  const head = el("div", "plan-head");
+  head.appendChild(el("h3", "", plan.goal));
+  const runAllBtn = button("Planı sırayla çalıştır", () => runAll(plan, runAllBtn), true);
+  head.append(runAllBtn, button("Markdown indir", () => downloadExport(plan)));
+  box.appendChild(head);
+  box.appendChild(el("div", "muted", `${plan.threads.length} iş parçacığı · ${plan.model} · $${plan.cost_usd.toFixed(4)}`));
+  plan.cards = [];
+  for (const t of plan.threads) {
+    const card = el("div", "thread");
+    const headRow = el("div", "thread-head");
+    headRow.append(el("span", "num", String(t.index + 1)), el("strong", "", t.title), el("span", "badge", t.level));
+    card.appendChild(headRow);
+    if (t.depends_on.length) card.appendChild(el("div", "muted", "Önce bitmesi gerekenler: " + t.depends_on.map((i) => i + 1).join(", ")));
+    if (t.files.length) card.appendChild(el("div", "muted", "Dosyalar: " + t.files.join(", ")));
+    card.appendChild(el("pre", "prompt", t.prompt));
+    if (t.check) card.appendChild(el("div", "muted", "Kontrol: " + t.check));
+    const row = el("div", "btns");
+    const copy = button("Prompt'u kopyala", () => navigator.clipboard.writeText(t.prompt));
+    const run = button("Bu iş parçacığını çalıştır", () => runThread(plan, t), true);
+    row.append(copy, run);
+    card.appendChild(row);
+    box.appendChild(card);
+    plan.cards.push({ t, card, run });
+  }
+  refreshThreads(plan);
+  return box;
+}
+
+function refreshThreads(plan) {
+  for (const { t, card, run } of plan.cards) {
+    card.className = "thread " + t.status;
+    const blocked = t.depends_on.some((i) => plan.threads[i].status !== "done");
+    run.disabled = blocked || t.status !== "pending";
+  }
+}
+
+async function setStatus(plan, t, status) {
+  await api(P(`/plans/${plan.id}/threads/${t.index}`), { status }, "PUT");
+  t.status = status;
+  refreshThreads(plan);
+  refresh();
+}
+
+// Runs one thread: asks, shows the proposal, waits for Uygula / Vazgeç. Returns the outcome.
+async function runThread(plan, t) {
+  if (busy) return "failed";
+  busy = true;
+  refreshThreads(plan);
+  const note = addAssistant();
+  note.appendChild(el("div", "muted", `Çalışıyor: ${t.title}…`));
+  let outcome = "failed";
+  try {
+    const res = await api(P("/ask"), { request: t.prompt, model: modelValue(), check: t.check, files: t.files });
+    note.remove();
+    const view = resultView(res);
+    outcome = await view.decided;
+    if (outcome === "applied") await setStatus(plan, t, "done");
+    if (outcome === "skipped") await setStatus(plan, t, "skipped");
+  } catch (e) {
+    note.textContent = "";
+    note.appendChild(el("div", "err", e.message));
+  }
+  busy = false;
+  refreshThreads(plan);
+  return outcome;
+}
+
+async function runAll(plan, btn) {
+  if (busy) return;
+  btn.disabled = true;
+  for (const t of plan.threads) {
+    if (t.status === "done") continue;
+    const blocked = t.depends_on.some((i) => plan.threads[i].status !== "done");
+    if (blocked) {
+      addAssistant().appendChild(el("div", "warn", `Durdu: "${t.title}" için önce bağımlı görevler bitmeli.`));
+      break;
+    }
+    const outcome = await runThread(plan, t);
+    if (outcome !== "applied") {
+      addAssistant().appendChild(el("div", "warn", `Durdu: "${t.title}" ${outcome === "skipped" ? "atlandı" : "uygulanmadı"}.`));
+      break;
+    }
+  }
+  btn.disabled = false;
+  refreshThreads(plan);
+}
+
+async function downloadExport(plan) {
+  const res = await fetch(P(`/plans/${plan.id}/export`), { headers: { "X-Tokenwise-Token": TOKEN } });
+  const url = URL.createObjectURL(await res.blob());
+  const a = el("a");
+  a.href = url;
+  a.download = `${plan.id}.md`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function openPlan(id) {
+  const plan = await api(P(`/plans/${id}`));
+  log.appendChild(renderPlan(plan));
+}
+
+async function sendPlan(goal) {
+  const note = addAssistant();
+  note.appendChild(el("div", "muted", "Hedef iş parçacıklarına bölünüyor…"));
+  try {
+    const plan = await api(P("/plan"), { goal, model: modelValue() });
+    note.remove();
+    log.appendChild(renderPlan(plan));
+    refresh();
+  } catch (e) {
+    note.textContent = "";
+    note.appendChild(el("div", "err", e.message));
+  }
+}
+
+async function sendChange(request) {
+  const note = addAssistant();
+  note.appendChild(el("div", "muted", "Düşünüyor…"));
+  try {
+    const res = await api(P("/ask"), { request, model: modelValue(), files: picked });
+    note.remove();
+    resultView(res);
+  } catch (e) {
+    note.textContent = "";
+    note.appendChild(el("div", "err", e.message));
+  }
+}
+
+async function send() {
+  const text = $("input").value.trim();
+  if (!text || busy) return;
+  busy = true;
+  $("send").disabled = true;
+  addUser(text);
+  $("input").value = "";
+  if (mode === "plan") await sendPlan(text);
+  else await sendChange(text);
+  busy = false;
+  $("send").disabled = false;
+  $("input").focus();
+}
+
+async function estimate() {
+  try {
+    const e = await api(P("/estimate"), { request: $("input").value, files: picked });
+    $("estimate").textContent =
+      `≈ ${e.input_tokens.toLocaleString("tr-TR")} giriş tokeni (harita ${e.map_tokens}, dosyalar ${e.files_tokens}) · ≈ $${e.est_usd.toFixed(4)} (kaba)`;
+  } catch (e) {
+    $("estimate").textContent = e.message;
+  }
+}
+
+function renderChips() {
+  $("chips").textContent = "";
+  for (const f of picked) {
+    const chip = el("span", "chip", f);
+    const x = button("×", () => { picked = picked.filter((p) => p !== f); renderChips(); });
+    x.style.padding = "0 6px";
+    chip.appendChild(x);
+    $("chips").appendChild(chip);
+  }
+}
+
+$("pick").addEventListener("change", () => {
+  const f = $("pick").value.trim();
+  if (f && project.files.includes(f) && !picked.includes(f) && picked.length < 8) {
+    picked.push(f);
+    renderChips();
+  }
+  $("pick").value = "";
+});
+
+function setMode(next) {
+  mode = next;
+  $("mode-change").classList.toggle("on", next === "change");
+  $("mode-plan").classList.toggle("on", next === "plan");
+  $("input").placeholder = next === "plan"
+    ? "Hedefi yaz. Örn: kayıt ekranına e-posta doğrulaması ekle"
+    : "Ne değişsin? Örn: login fonksiyonuna şifre uzunluk kontrolü ekle";
+}
+
+async function loadProject(id) {
+  pid = id;
+  localStorage.setItem("tw-project", id);
+  picked = [];
+  renderChips();
+  project = await api(P(""));
+  $("sub").textContent = `${project.files.length} dosya · harita ≈ ${project.map_tokens.toLocaleString("tr-TR")} token${project.git ? " · git" : ""}`;
+  $("files").textContent = project.files.join("\n");
+  $("file-list").textContent = "";
+  for (const f of project.files) {
+    const o = el("option");
+    o.value = f;
+    $("file-list").appendChild(o);
+  }
+  $("model").textContent = "";
+  for (const m of ["", ...project.models]) {
+    const o = el("option", "", m || "Otomatik (merdiven)");
+    o.value = m;
+    $("model").appendChild(o);
+  }
+  await refresh();
+}
+
+async function refresh() {
+  if (!pid) return;
+  const { spent_usd: spent, limit_usd: limit } = project.budget;
+  const current = await api(P(""));
+  project = current;
+  $("budget-bar").style.width = limit ? Math.min(100, (spent / limit) * 100) + "%" : "0%";
+  $("budget-text").textContent = limit
+    ? `$${current.budget.spent_usd.toFixed(4)} / $${limit.toFixed(2)} (son 7 gün)`
+    : `$${current.budget.spent_usd.toFixed(4)} (son 7 gün, limit yok)`;
+  const plans = await api(P("/plans"));
+  $("plans").textContent = "";
+  for (const p of plans) {
+    const b = button(`${p.goal.slice(0, 40)}  ${p.done}/${p.total}`, () => openPlan(p.id));
+    b.className = "plan-link";
+    $("plans").appendChild(b);
+  }
+  if (!plans.length) $("plans").appendChild(el("div", "muted", "Henüz plan yok."));
+}
+
+async function loadProjects() {
+  const list = await api("/api/projects");
+  $("project").textContent = "";
+  for (const p of list) {
+    const o = el("option", "", p.name);
+    o.value = p.id;
+    $("project").appendChild(o);
+  }
+  const saved = localStorage.getItem("tw-project");
+  const first = list.find((p) => p.id === saved) || list[0];
+  if (!first) {
+    $("sub").textContent = "Bu sunucuda proje yok. tokenwise serve --root <klasör> ile başlat.";
+    return;
+  }
+  $("project").value = first.id;
+  await loadProject(first.id);
+}
+
+$("project").onchange = () => loadProject($("project").value);
+$("undo").onclick = async () => {
+  try {
+    const r = await api(P("/undo"), {});
+    addAssistant().appendChild(el("div", "ok", "Geri alındı: " + r.undone.join(", ")));
+    refresh();
+  } catch (e) {
+    addAssistant().appendChild(el("div", "err", e.message));
+  }
+};
+$("send").onclick = send;
+$("estimate-btn").onclick = estimate;
+$("mode-change").onclick = () => setMode("change");
+$("mode-plan").onclick = () => setMode("plan");
+$("sbs").onchange = () => {};
+$("input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+});
+loadProjects().catch((e) => { $("sub").textContent = e.message; });
+</script>
+</body>
+</html>

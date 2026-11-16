@@ -27,7 +27,7 @@ def test_decode_normalises_and_rejects_binary():
 
 def test_crlf_file_keeps_crlf_after_edit_and_undo(settings):
     path = settings.root / "app/auth.py"
-    original = path.read_bytes().replace(b"\n", b"\r\n")
+    original = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
     path.write_bytes(BOM + original)
     changes = plan_changes(settings.root, parse_edits(EDIT))
     assert "\r" not in changes[0].new  # the model and the diff only ever see LF
@@ -45,13 +45,16 @@ def test_crlf_file_keeps_crlf_after_edit_and_undo(settings):
 
 def test_new_file_follows_crlf_of_its_siblings(settings):
     path = settings.root / "app/auth.py"
-    path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+    path.write_bytes(path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
     edits = parse_edits(EDIT + "\napp/new.py\n<<<<<<< SEARCH\n=======\nX = 1\n>>>>>>> REPLACE\n")
     apply_changes(settings, plan_changes(settings.root, edits))
     assert (settings.root / "app/new.py").read_bytes() == b"X = 1\r\n"
 
 
 def test_lf_file_stays_lf(settings):
+    # write_text would turn \n into \r\n on Windows; the file must really be LF here
+    path = settings.root / "app/auth.py"
+    path.write_bytes(path.read_bytes().replace(b"\r\n", b"\n"))
     apply_changes(settings, plan_changes(settings.root, parse_edits(EDIT)))
     assert b"\r" not in (settings.root / "app/auth.py").read_bytes()
 

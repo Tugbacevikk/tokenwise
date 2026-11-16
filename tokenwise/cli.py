@@ -536,5 +536,32 @@ def cache(
         console.print(f"{store.count()} cached replies in {path}")
 
 
+@app.command()
+def serve(
+    roots: list[Path] = typer.Option(
+        [Path(".")], "--root", "-r", help="Project folder. Repeat for several projects."
+    ),
+    host: str = typer.Option(
+        "127.0.0.1", "--host", help="Address to listen on. Other than 127.0.0.1 needs --token."
+    ),
+    port: int = typer.Option(8765, "--port", "-p", help="Port."),
+    token: str = typer.Option(
+        "", "--token", help="Password the page must send. Required when --host is not 127.0.0.1."
+    ),
+) -> None:
+    """Open the web interface for one or more projects."""
+    if host not in ("127.0.0.1", "localhost") and not token:
+        _fail("Listening on another address needs --token, so that only you can change files.")
+    try:
+        import uvicorn
+
+        from .web import create_app
+    except ImportError:
+        _fail('The web interface needs extra packages: pip install "tokenwise-coder[web]"')
+    link = f"http://{host}:{port}/" + (f"?token={token}" if token else "")
+    console.print(f"Arayüz: [bold]{link}[/]   (durdurmak için Ctrl+C)")
+    uvicorn.run(create_app(roots, token=token), host=host, port=port, log_level="warning")
+
+
 if __name__ == "__main__":
     app()

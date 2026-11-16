@@ -31,6 +31,9 @@ _EASY_WORDS = (
     "sabit",
 )
 # Words that usually mean a change touching design, many places or tricky behaviour.
+# Only words about the kind of change: a topic noun such as "cache", "database" or "schema"
+# says what the code is about, not how hard the change is ("add a --json option to the cache
+# command" is easy), so those are left out.
 _HARD_WORDS = (
     "refactor",
     "yeniden düzenle",
@@ -50,13 +53,6 @@ _HARD_WORDS = (
     "race",
     "security",
     "güvenlik",
-    "cache",
-    "önbellek",
-    "database",
-    "veritabanı",
-    "schema",
-    "protocol",
-    "protokol",
 )
 _BIG_CHANGE_LINES = 600
 

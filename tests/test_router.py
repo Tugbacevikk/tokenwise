@@ -42,3 +42,9 @@ def test_focused_big_file_counts_only_what_is_sent(project):
     (project / "huge.py").write_text("import os\n\n\n" + funcs)
     assert difficulty("add a check", project, ["huge.py"]) == HARD  # whole file: 800 lines
     assert difficulty("add a check", project, ["huge.py"], {"huge.py": ["f7"]}) == MEDIUM
+
+
+def test_topic_nouns_do_not_make_a_request_hard(tmp_path):
+    assert difficulty("cache komutuna --json seçeneği ekle", tmp_path, []) == MEDIUM
+    assert difficulty("add a column to the database report", tmp_path, []) == MEDIUM
+    assert difficulty("rename the schema field", tmp_path, []) == EASY

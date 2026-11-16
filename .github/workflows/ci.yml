@@ -6,9 +6,13 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    env:
+      PYTHONUTF8: "1"  # open() defaults to UTF-8 on every OS, not the Windows code page
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest]
         python-version: ["3.11", "3.13"]
     steps:
       - uses: actions/checkout@v7
