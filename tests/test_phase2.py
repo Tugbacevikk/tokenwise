@@ -56,7 +56,12 @@ def test_docker_args_lock_the_container_down(tmp_path):
 
 
 def test_missing_docker_is_a_skip_not_a_failure(tmp_path, monkeypatch):
-    monkeypatch.setenv("PATH", str(tmp_path))  # no docker binary anywhere
+    import tokenwise.checker as checker
+
+    def no_docker(*args, **kwargs):
+        raise FileNotFoundError("docker")
+
+    monkeypatch.setattr(checker.subprocess, "run", no_docker)
     result = run_in_docker(Settings(root=tmp_path, sandbox="docker"), "true", tmp_path)
     assert result.skipped and not result.passed
 
