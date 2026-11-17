@@ -7,6 +7,41 @@ a change that breaks existing use bumps major.
 
 First release.
 
+- Measured on 10 open-source repositories (docs/measurements.md): findings 1537 -> 394 after
+  the fixes below, about 10% false alarms in a hand-checked sample, risk score mean AUC 0.68.
+- Quieter RepoDoctor: docs, examples, scripts and tool config are support code (no test, style
+  or cycle rules); a file reached by a test through its package's `__init__.py`/`index.js` or
+  one module in between counts as tested; modules without functions or classes need no tests;
+  Bandit reports medium severity and confidence and up; Ruff checks only bug rules in projects
+  without a Ruff config and never in tests; a problem Bandit and a built-in rule both see is
+  counted once; import cycles count only imports that run at load time, and `import json` no
+  longer resolves to a project's own `json/` package.
+- ReleaseGuard's tests signal scores only changed files without tests. "This PR changes no
+  test" is still shown but no longer scored: it pointed the wrong way on all 10 repositories.
+- Fixed: a scan crashed on `require("..")` from a top-level folder.
+- `tokenwise server doctor`: checks the database, secrets, the GitHub App's events and
+  permissions, Docker, the sandbox image and that check copies are visible to containers.
+- Internal: business logic moved from web.py and cli.py into `tokenwise/services/`.
+
+- Hosted version (`pip install "tokenwise-coder[server]"`, `tokenwise server web|worker|migrate`):
+  a GitHub App that scans the default branch on every push, keeps one risk comment per pull
+  request (drafts included) up to date, and turns a finding into a draft PR on a
+  `tokenwise/fix-N` branch once an organization owner approves the Agent's proposal. PostgreSQL
+  holds the data and the job queue (`FOR UPDATE SKIP LOCKED`). Organizations with one-member
+  personal accounts, membership checked on every request, model keys encrypted and brought by
+  the customer, a repository's `tokenwise.toml` limited to its check and file choices, all data
+  deleted when the app is removed. Dockerfile, docker-compose.yml and docs/hosting.md.
+- `sandbox = "docker"`: the check runs in a container with no network, a read-only system, no
+  capabilities and CPU/memory/process limits. Without Docker the check is skipped, not failed.
+- `scan_tools` / `tokenwise scan --tools ruff,bandit,coverage`: findings from Ruff, Bandit and
+  an existing coverage report. A tool that did not run does not resolve its earlier findings.
+- ReleaseGuard shows the changed functions with their callers and the tests that call them
+  (Python with `ast`; JS/TS with Tree-sitter via the `impact` extra).
+- `tokenwise calibrate`: replays past commits as PRs, measures each risk signal's AUC against
+  later fixes and suggests weights; `--save` makes `tokenwise risk` use them for the project.
+- `tokenwise findings --stats`: per rule, how many findings were resolved and how many a person
+  ignored (false alarm rate).
+
 - Prices can have a long-prompt tier (`long_threshold`, `long_multiplier`): Claude Haiku 5.5
   costs 5x above 100K prompt tokens, which the cost ledger now counts. Overrides take two
   optional extra values: `[input, cache_write, cache_read, output, long_threshold, long_multiplier]`.

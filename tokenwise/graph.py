@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import ast
 import re
+import sys
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
@@ -21,17 +23,25 @@ _JS_IMPORT = re.compile(
 )
 
 
+_STDLIB = frozenset(sys.stdlib_module_names)
+
+
 @dataclass
 class Graph:
     files: list[str]
     deps: dict[str, set[str]] = field(default_factory=dict)  # file -> files it imports
     rdeps: dict[str, set[str]] = field(default_factory=dict)  # file -> files importing it
+    # imports that run when the module loads: not inside a function, not `if TYPE_CHECKING`,
+    # not `import type`. Only these can make an import cycle.
+    runtime: dict[str, set[str]] = field(default_factory=dict)
 
-    def add(self, src: str, dst: str) -> None:
+    def add(self, src: str, dst: str, runtime: bool = True) -> None:
         if src == dst:
             return
         self.deps.setdefault(src, set()).add(dst)
         self.rdeps.setdefault(dst, set()).add(src)
+        if runtime:
+            self.runtime.setdefault(src, set()).add(dst)
 
     def fan_in(self, path: str, tests: bool = False) -> int:
         """How many files import this one; test files only when `tests` is true."""
@@ -54,18 +64,38 @@ class Graph:
         return seen
 
     def tested(self, path: str) -> bool:
-        """True if a test file imports the file or is named after it."""
+        """True if a test file is named after the file or reaches it through imports: directly,
+        through package entry files (`__init__.py`, `index.js`) that re-export it, or through
+        one ordinary module in between. Libraries are tested through their public package,
+        so `import httpx` in a test covers `httpx/_api.py`."""
         if is_test_file(path):
             return True
-        if any(is_test_file(user) for user in self.rdeps.get(path, ())):
+        if self._reached_by_test(path):
             return True
         stem = PurePosixPath(path).stem
         if stem == "__init__":
             return True
         return any(is_test_file(f) and _names_stem(f, stem) for f in self.files)
 
+    def _reached_by_test(self, path: str) -> bool:
+        seen = {path}
+        queue = deque([(path, 0)])
+        while queue:
+            node, plain_hops = queue.popleft()
+            for user in self.rdeps.get(node, ()):
+                if is_test_file(user):
+                    return True
+                hops = plain_hops + (0 if _is_entry(user) else 1)
+                if user not in seen and hops <= 1:
+                    seen.add(user)
+                    queue.append((user, hops))
+        return False
+
     def cycles(self) -> list[list[str]]:
-        """Groups of files that import each other (Tarjan's strongly connected components)."""
+        """Groups of files whose load-time imports go round in a circle (Tarjan's strongly
+        connected components). An import inside a function is the usual way to break a
+        cycle, so it does not count."""
+        edges = self.runtime
         index: dict[str, int] = {}
         low: dict[str, int] = {}
         stack: list[str] = []
@@ -75,7 +105,7 @@ class Graph:
 
         def visit(node: str) -> None:
             nonlocal counter
-            work = [(node, iter(sorted(self.deps.get(node, ()))))]
+            work = [(node, iter(sorted(edges.get(node, ()))))]
             index[node] = low[node] = counter
             counter += 1
             stack.append(node)
@@ -89,7 +119,7 @@ class Graph:
                         counter += 1
                         stack.append(child)
                         on_stack.add(child)
-                        work.append((child, iter(sorted(self.deps.get(child, ())))))
+                        work.append((child, iter(sorted(edges.get(child, ())))))
                     elif child in on_stack:
                         low[current] = min(low[current], index[child])
                     continue
@@ -108,10 +138,15 @@ class Graph:
                     if len(group) > 1:
                         found.append(sorted(group))
 
-        for node in sorted(self.deps):
+        for node in sorted(edges):
             if node not in index:
                 visit(node)
         return sorted(found)
+
+
+def _is_entry(path: str) -> bool:
+    name = PurePosixPath(path).name
+    return name == "__init__.py" or PurePosixPath(name).stem == "index"
 
 
 def _names_stem(test_path: str, stem: str) -> bool:
@@ -133,29 +168,68 @@ def _module_names(path: str) -> list[str]:
     return names
 
 
-def _python_imports(path: str, source: str) -> list[str]:
+def _python_imports(path: str, source: str) -> list[tuple[list[str], bool, bool]]:
+    """Each import as (module names to try, most specific first; runs at load time;
+    absolute)."""
     try:
         tree = ast.parse(source)
     except (SyntaxError, ValueError):
         return []
     package = list(PurePosixPath(path).parent.parts)
     is_init = PurePosixPath(path).stem == "__init__"
-    found = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            found.extend(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom):
-            base = node.module or ""
-            if node.level:
-                keep = len(package) - (node.level - 1)
-                if keep < 0 or (not package and not is_init and node.level > 1):
-                    continue
+    found: list[tuple[list[str], bool, bool]] = []
+
+    def visit(node: ast.AST, runtime: bool) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                visit(child, False)
+            elif isinstance(child, ast.If) and (
+                _is_type_checking(child.test) or _is_main_guard(child.test)
+            ):
+                for item in child.body:
+                    visit_one(item, False)
+                for item in child.orelse:
+                    visit_one(item, runtime)
+            else:
+                visit_one(child, runtime)
+
+    def visit_one(child: ast.AST, runtime: bool) -> None:
+        if isinstance(child, ast.Import):
+            for alias in child.names:
+                found.append(([alias.name], runtime, True))
+        elif isinstance(child, ast.ImportFrom):
+            base = child.module or ""
+            if child.level:
+                keep = len(package) - (child.level - 1)
+                if keep < 0 or (not package and not is_init and child.level > 1):
+                    return
                 prefix = ".".join(package[:keep])
                 base = f"{prefix}.{base}".strip(".") if base else prefix
-            if base:
-                found.append(base)
-            found.extend(f"{base}.{alias.name}".strip(".") for alias in node.names)
+            for alias in child.names:
+                # `from pkg import mod` imports pkg/mod.py; `from pkg import name` imports pkg
+                names = [f"{base}.{alias.name}".strip(".")] + ([base] if base else [])
+                found.append((names, runtime, not child.level))
+        else:
+            visit(child, runtime)
+
+    visit(tree, True)
     return found
+
+
+def _is_main_guard(test: ast.AST) -> bool:
+    """`if __name__ == "__main__":` runs only as a script, never on import."""
+    return (
+        isinstance(test, ast.Compare)
+        and isinstance(test.left, ast.Name)
+        and test.left.id == "__name__"
+        and any(isinstance(c, ast.Constant) and c.value == "__main__" for c in test.comparators)
+    )
+
+
+def _is_type_checking(test: ast.AST) -> bool:
+    return (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (
+        isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+    )
 
 
 def _resolve_js(path: str, spec: str, files: set[str]) -> str | None:
@@ -171,6 +245,8 @@ def _resolve_js(path: str, spec: str, files: set[str]) -> str | None:
         elif part != ".":
             parts.append(part)
     base = "/".join(parts)
+    if not base:  # require("..") from a top-level folder: the package's own entry point
+        return next((f"index{ext}" for ext in _JS_EXT if f"index{ext}" in files), None)
     candidates = [base] + [base + ext for ext in _JS_EXT]
     candidates += [f"{base}/index{ext}" for ext in _JS_EXT]
     stem = str(PurePosixPath(base).with_suffix(""))
@@ -178,29 +254,47 @@ def _resolve_js(path: str, spec: str, files: set[str]) -> str | None:
     return next((c for c in candidates if c in files), None)
 
 
-def build_graph(settings: Settings, files: list[str] | None = None) -> Graph:
+def build_graph(
+    settings: Settings,
+    files: list[str] | None = None,
+    read: Callable[[str], str] | None = None,
+) -> Graph:
+    """The import graph of `files` (default: the project's source files). `read` returns a
+    file's text; by default it is read from disk, the calibration reads it from a git commit."""
     files = files if files is not None else list_source_files(settings)
+    read = read or (lambda path: read_source(settings.root / path))
     graph = Graph(files=files)
     file_set = set(files)
     modules: dict[str, str] = {}
+    rooted: dict[str, str] = {}  # names counted from the project root (or its src/ folder)
     for path in files:
         if path.endswith(".py"):
-            for name in _module_names(path):
+            names = _module_names(path)
+            for name in names:
                 modules.setdefault(name, path)
+            for name in names[: 2 if names[0].startswith("src.") else 1]:
+                rooted.setdefault(name, path)
 
     for path in files:
         try:
-            source = read_source(settings.root / path)
-        except (OSError, ValueError):
+            source = read(path)
+        except (OSError, ValueError, KeyError):
             continue
         if path.endswith(".py"):
-            for name in _python_imports(path, source):
-                target = modules.get(name)
+            for names, runtime, absolute in _python_imports(path, source):
+                # `import json` is the standard library, not flask/json/: a stdlib name only
+                # matches a module that really sits at the top of the project
+                table = rooted if absolute and names[-1].split(".")[0] in _STDLIB else modules
+                target = next((table[n] for n in names if n in table), None)
                 if target:
-                    graph.add(path, target)
+                    graph.add(path, target, runtime)
         elif path.endswith(_JS_EXT):
-            for spec in _JS_IMPORT.findall(source):
-                target = _resolve_js(path, spec, file_set)
+            for match in _JS_IMPORT.finditer(source):
+                target = _resolve_js(path, match.group(1), file_set)
                 if target:
-                    graph.add(path, target)
+                    text = match.group(0)
+                    lazy = text.startswith(("import(", "import (")) or re.match(
+                        r"(import|export)\s+type\b", text
+                    )
+                    graph.add(path, target, not lazy)
     return graph

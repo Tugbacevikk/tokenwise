@@ -62,6 +62,13 @@ max_context = 32768
 # Command that must pass before a change is offered, run in a throwaway copy of the project.
 # A failing check is sent back to the model to fix. {{python}} = the Python running tokenwise.
 # check = "{{python}} -m pytest -q -x"
+# Extra RepoDoctor sources, used when installed: "ruff", "bandit", and "coverage" (reads the
+# coverage.json / coverage.xml your own test run wrote; tests are never run by a scan).
+# scan_tools = ["ruff", "bandit", "coverage"]
+# Where the check runs. "local": the copy on this machine. "docker": the copy inside a container
+# with no network, a read-only system, CPU/memory limits; {{python}} is then the image's python.
+# sandbox = "docker"
+# sandbox_image = "python:3.12-slim"
 
 # Prices in USD per million tokens: [input, cache_write, cache_read, output].
 # Claude models are built in; add any other model here (local models cost 0).
@@ -102,6 +109,11 @@ class Settings:
     cache: bool = True
     check: str = ""
     check_timeout: int = 300
+    scan_tools: tuple[str, ...] = ()  # extra RepoDoctor sources: "ruff", "bandit", "coverage"
+    sandbox: str = "local"  # "local" (a copy on this machine) or "docker" (a locked container)
+    sandbox_image: str = "python:3.12-slim"
+    sandbox_cpus: float = 1.0
+    sandbox_memory: str = "1g"
     prices: dict = field(default_factory=dict)
 
     @property
@@ -130,6 +142,8 @@ def load_settings(root: Path | str = ".") -> Settings:
     settings.base_url = os.getenv("TOKENWISE_BASE_URL", settings.base_url)
     if models := os.getenv("TOKENWISE_MODELS"):
         settings.models = tuple(m.strip() for m in models.split(",") if m.strip())
+    if settings.sandbox not in ("local", "docker"):
+        raise ValueError('tokenwise: `sandbox` must be "local" or "docker"')
     if not settings.models:
         raise ValueError("tokenwise: `models` must list at least one model")
     return settings

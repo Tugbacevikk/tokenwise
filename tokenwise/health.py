@@ -10,7 +10,7 @@ import json
 import math
 import sqlite3
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -70,6 +70,13 @@ CATEGORY_WEIGHT = {
 STATUSES = ("open", "resolved", "ignored")
 
 
+def source_of(rule: str) -> str:
+    """Which analyzer produces a rule: "ruff:E501" -> "ruff", "low-coverage" -> "coverage"."""
+    if ":" in rule:
+        return rule.split(":", 1)[0]
+    return "coverage" if rule == "low-coverage" else "builtin"
+
+
 def health_path(settings: Settings) -> Path:
     return settings.state_dir / "health.db"
 
@@ -100,6 +107,8 @@ class ScanResult:
     reopened: int
     files: int
     seconds: float
+    tools: list[str] = field(default_factory=list)  # external tools that ran
+    skipped_tools: dict[str, str] = field(default_factory=dict)
 
 
 class HealthStore:
@@ -126,7 +135,9 @@ class HealthStore:
         file_count: int,
         seconds: float,
         ts: str | None = None,
+        sources: set[str] | None = None,
     ) -> ScanResult:
+        """`sources`: which analyzers ran ("builtin", "ruff", ...); None = all of them."""
         ts = ts or now()
         cur = self.db.execute(
             "INSERT INTO scans (ts, repository, commit_sha, files, seconds) VALUES (?, ?, ?, ?, ?)",
@@ -164,11 +175,17 @@ class HealthStore:
                 " reopened = reopened + ? WHERE id = ?",
                 (*values, status, int(row["status"] == "resolved"), row["id"]),
             )
-        resolved = self.db.execute(
-            "UPDATE findings SET status = 'resolved', resolved_at = ?"
-            " WHERE status = 'open' AND last_scan < ?",
-            (ts, scan_id),
-        ).rowcount
+        resolved = 0
+        stale = self.db.execute(
+            "SELECT id, rule FROM findings WHERE status = 'open' AND last_scan < ?", (scan_id,)
+        ).fetchall()
+        for row in stale:  # a tool that did not run this time cannot say its findings are gone
+            if sources is None or source_of(row["rule"]) in sources:
+                self.db.execute(
+                    "UPDATE findings SET status = 'resolved', resolved_at = ? WHERE id = ?",
+                    (ts, row["id"]),
+                )
+                resolved += 1
         open_rows = self.open_findings()
         scores = scores_for(open_rows, file_count)
         self.db.execute(
@@ -206,6 +223,23 @@ class HealthStore:
         self.db.execute("UPDATE findings SET status = ? WHERE id = ?", (status, finding_id))
         self.db.commit()
         return self.get(finding_id)
+
+    def rule_stats(self) -> list[dict]:
+        """Per rule: how its findings ended. A finding a person ignored counts as a false alarm,
+        one that went away from the code as a true one; open findings are not judged yet."""
+        rows = self.db.execute(
+            "SELECT rule, category, COUNT(*) AS total,"
+            " SUM(status = 'open') AS open, SUM(status = 'resolved') AS resolved,"
+            " SUM(status = 'ignored') AS ignored, SUM(reopened) AS reopened"
+            " FROM findings GROUP BY rule, category ORDER BY total DESC, rule"
+        ).fetchall()
+        result = []
+        for r in rows:
+            item = dict(r)
+            judged = item["resolved"] + item["ignored"]
+            item["false_alarm_rate"] = round(item["ignored"] / judged, 3) if judged else None
+            result.append(item)
+        return result
 
     def snapshots(self, limit: int = 30) -> list[dict]:
         rows = self.db.execute(
@@ -254,19 +288,40 @@ def ranked(findings: list[dict], history: History) -> list[dict]:
     return sorted(findings, key=lambda f: (-f["priority"], f["id"]))
 
 
-def scan(settings: Settings, graph: Graph | None = None) -> ScanResult:
+def collect(settings: Settings, graph: Graph, tools: tuple[str, ...] | None = None):
+    """Built-in findings plus those of the configured external tools. A coverage report, when
+    there is one, is better evidence than imports: a file it covers well is not "missing tests"."""
+    from .external import LOW_COVERAGE, drop_twins, run_tools
+
+    found = analyze(settings, graph)
+    run = run_tools(settings, graph.files, settings.scan_tools if tools is None else tools)
+    found = drop_twins(found, run.findings)
+    if run.coverage:
+        found = [
+            f for f in found
+            if not (f.rule == "missing-tests" and run.coverage.get(f.file, 0) >= LOW_COVERAGE)
+        ]  # fmt: skip
+    return found + run.findings, run
+
+
+def scan(
+    settings: Settings, graph: Graph | None = None, tools: tuple[str, ...] | None = None
+) -> ScanResult:
     """Run every analyzer and record the result as one scan."""
     started = time.monotonic()
     graph = graph or build_graph(settings)
-    found = analyze(settings, graph)
+    found, run = collect(settings, graph, tools)
     with HealthStore(health_path(settings)) as store:
-        return store.record(
+        result = store.record(
             settings.root.resolve().name,
             head_commit(settings.root),
             found,
             len(graph.files),
             round(time.monotonic() - started, 2),
+            sources={"builtin", *run.ran},
         )
+    result.tools, result.skipped_tools = run.ran, run.skipped
+    return result
 
 
 def weekly_report(settings: Settings, days: int = 7, top: int = 5) -> str:

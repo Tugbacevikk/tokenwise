@@ -23,6 +23,7 @@ from .llm import LLM, CachedLLM, ConfigError, ContextTooLongError, LLMError, cac
 from .pipeline import Result, run
 from .pricing import format_usd, reply_cost
 from .repo_map import estimate_tokens, fit_map, list_source_files, source_tokens
+from .services.changes import budget
 from .textio import read_source
 
 app = typer.Typer(
@@ -184,62 +185,22 @@ def ask(
     """Make a code change with the least context and the fewest lines."""
     settings = load_settings(root)
     ledger = Ledger(ledger_path(settings))
-    spent = ledger.summary(7)["cost_usd"]
-    budget = settings.budget_usd_week
-    if budget and spent >= budget and not over_budget:
+    state = budget(settings, methods=None)
+    if state.used_up and not over_budget:
         _fail(
-            f"Weekly budget used up: {format_usd(spent)} of {format_usd(budget)} "
+            f"Weekly budget used up: {format_usd(state.spent)} of {format_usd(state.limit)} "
             "in the last 7 days. Raise budget_usd_week in tokenwise.toml or pass --over-budget.",
             as_json,
         )
-    if no_cache:
-        settings.cache = False
-    if check:
-        settings.check = check
-    if no_check:
-        settings.check = ""
-    try:
-        llm = make_llm(settings)
-    except ConfigError as exc:
-        _fail(str(exc), as_json)
-
-    try:
-        if as_json:
-            result = run(request, settings, llm, model)
-        else:
-            with console.status("Choosing files and writing the change..."):
-                result = run(request, settings, llm, model)
-    except LLMError as exc:
-        _fail(str(exc), as_json)
-    except Exception as exc:  # the editor shows this to the user, so never crash silently
-        if not as_json:
-            raise
-        _fail(f"{type(exc).__name__}: {exc}", as_json=True)
-
+    settings.cache = settings.cache and not no_cache
+    settings.check = "" if no_check else (check or settings.check)
+    result = _run_request(request, settings, model, as_json)
     run_id = ledger.record(result)
-    budget_note = ""
-    if budget:
-        spent += result.cost
-        budget_note = f"{format_usd(spent)} of {format_usd(budget)} weekly budget used"
-
+    spent = state.spent + result.cost
     if as_json:
-        if result.ok:
-            _save_pending(settings, run_id, result)
-        if result.changes and result.check_passed is False:
-            _save_pending(settings, run_id, result)  # the user may still choose to apply it
-        budget_info = {"budget_usd_week": budget, "spent_7d_usd": round(spent, 6)}
-        print(json.dumps({"run_id": run_id, **result.to_dict(), **budget_info}))
-        raise typer.Exit(0 if result.ok else 1)
-
-    if result.files:
-        console.print(f"Files: [cyan]{', '.join(result.files)}[/]")
-    if result.models:
-        console.print(f"Difficulty: [cyan]{result.level}[/] → {' → '.join(result.models)}")
+        _print_json(settings, run_id, result, spent)
+    _show_result(result)
     if result.changes and result.check_passed is False:
-        for change in result.changes:
-            console.print(
-                Syntax(change.diff, "diff", theme="ansi_dark", background_color="default")
-            )
         console.print(f"[red]Check failed:[/] {result.check}")
         console.print(result.check_output, markup=False, highlight=False)
         console.print(_usage_table(result))
@@ -250,21 +211,7 @@ def ask(
         console.print(f"[red]No change produced:[/] {result.error}")
         console.print(_usage_table(result))
         raise typer.Exit(1)
-
-    for change in result.changes:
-        console.print(Syntax(change.diff, "diff", theme="ansi_dark", background_color="default"))
-    if result.check_passed:
-        console.print(f"[green]Check passed:[/] {result.check}")
-    console.print(_usage_table(result))
-    added, removed = result.lines
-    console.print(
-        f"{len(result.changes)} file(s) · [green]+{added}[/] [red]-{removed}[/] lines · "
-        f"by {result.model}"
-    )
-    if budget_note:
-        color = "yellow" if spent >= 0.8 * budget else "dim"
-        console.print(f"[{color}]{budget_note}[/]")
-
+    _show_summary(result, spent, state.limit)
     if dry_run:
         _save_pending(settings, run_id, result)
         console.print("Not applied. Apply later with: tokenwise apply")
@@ -274,6 +221,57 @@ def ask(
         console.print("[green]Applied.[/] Undo with: tokenwise undo")
     else:
         console.print("Nothing changed.")
+
+
+def _run_request(request: str, settings, model: str, as_json: bool) -> Result:
+    try:
+        llm = make_llm(settings)
+    except ConfigError as exc:
+        _fail(str(exc), as_json)
+    try:
+        if as_json:
+            return run(request, settings, llm, model)
+        with console.status("Choosing files and writing the change..."):
+            return run(request, settings, llm, model)
+    except LLMError as exc:
+        _fail(str(exc), as_json)
+    except Exception as exc:  # the editor shows this to the user, so never crash silently
+        if not as_json:
+            raise
+        _fail(f"{type(exc).__name__}: {exc}", as_json=True)
+    raise AssertionError("unreachable")  # _fail always exits
+
+
+def _print_json(settings, run_id: int, result: Result, spent: float) -> None:
+    # a failed check still leaves the proposal: the user may choose to apply it anyway
+    if result.ok or (result.changes and result.check_passed is False):
+        _save_pending(settings, run_id, result)
+    budget_info = {"budget_usd_week": settings.budget_usd_week, "spent_7d_usd": round(spent, 6)}
+    print(json.dumps({"run_id": run_id, **result.to_dict(), **budget_info}))
+    raise typer.Exit(0 if result.ok else 1)
+
+
+def _show_result(result: Result) -> None:
+    if result.files:
+        console.print(f"Files: [cyan]{', '.join(result.files)}[/]")
+    if result.models:
+        console.print(f"Difficulty: [cyan]{result.level}[/] → {' → '.join(result.models)}")
+    for change in result.changes:
+        console.print(Syntax(change.diff, "diff", theme="ansi_dark", background_color="default"))
+
+
+def _show_summary(result: Result, spent: float, limit: float) -> None:
+    if result.check_passed:
+        console.print(f"[green]Check passed:[/] {result.check}")
+    console.print(_usage_table(result))
+    added, removed = result.lines
+    console.print(
+        f"{len(result.changes)} file(s) · [green]+{added}[/] [red]-{removed}[/] lines · "
+        f"by {result.model}"
+    )
+    if limit:
+        color = "yellow" if spent >= 0.8 * limit else "dim"
+        console.print(f"[{color}]{format_usd(spent)} of {format_usd(limit)} weekly budget used[/]")
 
 
 @app.command()
@@ -525,18 +523,22 @@ SEVERITY_STYLE = {"high": "red", "medium": "yellow", "low": "dim"}
 @app.command()
 def scan(
     root: Path = RootOption,
+    tools: str = typer.Option(
+        "", "--tools", help="Extra sources, comma separated: ruff, bandit, coverage."
+    ),
     as_json: bool = typer.Option(False, "--json", help="Print the result as JSON."),
 ) -> None:
     """RepoDoctor: analyze the project, track findings over time and score its health."""
     from .health import scan as run_scan
 
     settings = load_settings(root)
+    chosen = tuple(t.strip() for t in tools.split(",") if t.strip()) or None
     if as_json:
-        result = run_scan(settings)
+        result = run_scan(settings, tools=chosen)
         print(json.dumps(result.__dict__))
         return
     with console.status("Scanning..."):
-        result = run_scan(settings)
+        result = run_scan(settings, tools=chosen)
     table = Table(title=f"Health: {result.scores['overall']}/100")
     table.add_column("Category")
     table.add_column("Score", justify="right")
@@ -548,6 +550,10 @@ def scan(
         f"{result.files} files · {result.open} open · [red]{result.new} new[/] · "
         f"[green]{result.resolved} resolved[/] · {result.reopened} reopened · {result.seconds}s"
     )
+    if result.tools:
+        console.print(f"Tools: {', '.join(result.tools)}")
+    for tool, why in result.skipped_tools.items():
+        console.print(f"[yellow]Skipped {tool}:[/] {why}")
     console.print("See them with: tokenwise findings · weekly report: tokenwise findings --report")
 
 
@@ -560,6 +566,9 @@ def findings(
     ignore: int = typer.Option(0, "--ignore", help="Mark this finding as ignored."),
     reopen: int = typer.Option(0, "--reopen", help="Open an ignored finding again."),
     limit: int = typer.Option(30, "--limit", "-n"),
+    stats: bool = typer.Option(
+        False, "--stats", help="Per rule: findings resolved vs ignored (false alarm rate)."
+    ),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
     """RepoDoctor: list findings by priority (severity x how often the file changes and breaks)."""
@@ -569,6 +578,28 @@ def findings(
     settings = load_settings(root)
     if report_md:
         print(weekly_report(settings, days=days), end="")
+        return
+    if stats:
+        with HealthStore(health_path(settings)) as store:
+            rules = store.rule_stats()
+        if as_json:
+            print(json.dumps(rules, ensure_ascii=False))
+            return
+        if not rules:
+            console.print("No findings yet. Run: tokenwise scan")
+            return
+        table = Table(title="Findings per rule")
+        for column in ("Rule", "Category", "Total", "Open", "Resolved", "Ignored", "Reopened",
+                       "False alarms"):  # fmt: skip
+            table.add_column(column, justify="left" if column in ("Rule", "Category") else "right")
+        for r in rules:
+            rate = r["false_alarm_rate"]
+            table.add_row(r["rule"], r["category"], str(r["total"]), str(r["open"]),
+                          str(r["resolved"]), str(r["ignored"]), str(r["reopened"]),
+                          "-" if rate is None else f"{rate:.0%}")  # fmt: skip
+        console.print(table)
+        console.print("[dim]False alarms = ignored / (ignored + resolved). Open ones are not "
+                      "counted until a person or a scan decides.[/]")  # fmt: skip
         return
     with HealthStore(health_path(settings)) as store:
         for finding_id, new_status in ((ignore, "ignored"), (reopen, "open")):
@@ -676,6 +707,68 @@ def risk(
 
 
 @app.command()
+def calibrate(
+    root: Path = RootOption,
+    sample: int = typer.Option(200, "--sample", help="How many past commits to score."),
+    window: int = typer.Option(
+        20, "--window", help="A fix within this many later commits marks a commit as a regression."
+    ),
+    save: bool = typer.Option(False, "--save", help="Use the suggested weights for this project."),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    """ReleaseGuard: replay past commits as PRs and measure how well each risk signal predicted
+    the ones that needed a fix later (AUC). Reads git only; no model is called."""
+    from .calibrate import CalibrationError, save_weights
+    from .calibrate import calibrate as run_calibration
+    from .release import LABELS, WEIGHTS, load_weights
+
+    settings = load_settings(root)
+    try:
+        if as_json:
+            result = run_calibration(settings, sample=sample, window=window)
+        else:
+            with console.status("Replaying history..."):
+                result = run_calibration(settings, sample=sample, window=window)
+        path = save_weights(settings, result) if save else None
+    except CalibrationError as exc:
+        _fail(str(exc), as_json)
+    if as_json:
+        print(json.dumps(result.to_dict(), ensure_ascii=False))
+        return
+    console.print(
+        f"{len(result.samples)} commits scored · {result.positives} needed a fix within "
+        f"{result.window} commits · {result.commits} commits read · {result.seconds}s"
+    )
+    current = load_weights(settings) if not save else WEIGHTS
+    table = Table()
+    for column in ("Signal", "AUC", "Weight now", "Suggested"):
+        table.add_column(column, justify="left" if column == "Signal" else "right")
+    for name in WEIGHTS:
+        value = result.auc.get(name)
+        suggested = result.suggested.get(name)
+        table.add_row(
+            LABELS[name],
+            "-" if value is None else f"{value:.2f}",
+            f"{current[name]:.2f}",
+            "-" if suggested is None else f"{suggested:.2f}",
+        )
+    score_auc = result.auc.get("score")
+    table.add_row("[bold]Risk score[/]", "-" if score_auc is None else f"{score_auc:.2f}", "", "")
+    console.print(table)
+    if not result.suggested:
+        console.print(
+            "[yellow]No weights suggested:[/] fewer than 10 regressions or no signal beat 0.5."
+        )
+    elif result.suggested_auc is not None:
+        console.print(f"With the suggested weights the score's AUC is {result.suggested_auc:.2f}"
+                      " (measured on the same commits, so optimistic).")  # fmt: skip
+    if path:
+        console.print(f"[green]Saved[/] to {path}; `tokenwise risk` now uses these weights.")
+    elif result.suggested:
+        console.print("Use them for this project with: tokenwise calibrate --save")
+
+
+@app.command()
 def cache(
     root: Path = RootOption,
     clear: bool = typer.Option(False, "--clear", help="Delete every stored reply."),
@@ -722,3 +815,57 @@ def serve(
 
 if __name__ == "__main__":
     app()
+
+
+server_app = typer.Typer(help="The hosted version: GitHub App, dashboard and worker.")
+app.add_typer(server_app, name="server")
+
+
+@server_app.command("web")
+def server_web() -> None:
+    """Run the web app (webhooks, dashboard, API). Settings come from environment variables;
+    see docs/hosting.md."""
+    from .server.app import main as web_main
+
+    web_main()
+
+
+@server_app.command("worker")
+def server_worker() -> None:
+    """Run a worker: scans, PR risk comments and approved fixes, one job at a time."""
+    from .server.worker import main as worker_main
+
+    worker_main()
+
+
+@server_app.command("migrate")
+def server_migrate() -> None:
+    """Create or update the PostgreSQL tables."""
+    from .server import db
+    from .server.config import ServerConfig
+
+    server = ServerConfig.from_env()
+    with db.connect(server.database_url) as conn:
+        db.migrate(conn)
+    console.print("[green]Database ready.[/]")
+
+
+@server_app.command("doctor")
+def server_doctor() -> None:
+    """Check a hosted setup: database, secrets, the GitHub App, Docker and the work folder."""
+    from .server.config import ServerConfig
+    from .server.doctor import ready, run_checks
+
+    try:
+        server = ServerConfig.from_env()
+    except (KeyError, ValueError, OSError) as exc:
+        _fail(f"Settings are incomplete: {exc}. See docs/hosting.md.")
+    checks = run_checks(server)
+    table = Table(show_header=False, box=None)
+    for c in checks:
+        mark = "[green]ok[/]" if c.ok else ("[red]HATA[/]" if c.required else "[yellow]uyarı[/]")
+        table.add_row(mark, c.name, c.detail)
+    console.print(table)
+    if not ready(checks):
+        raise typer.Exit(1)
+    console.print("[green]Hazır.[/] GitHub App'i bir hesaba kurup ilk taramayı bekleyin.")
