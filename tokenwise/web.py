@@ -1,4 +1,5 @@
-"""Local web interface behind `tokenwise serve`. It uses the same pipeline as the CLI.
+"""Local web interface behind `tokenwise serve`. Routes only: the work is in `services`,
+shared with the CLI and the hosted server.
 
 The server can change files in the projects it serves, so by default it listens on 127.0.0.1
 only. Another address needs a token, which every /api request must send in a header.
@@ -25,52 +26,54 @@ Endpoints (pid is a project id from GET /api/projects):
   POST /api/projects/{pid}/sessions/{id}/messages   one turn: the assistant answers
 """
 
-import json
 import re
-import subprocess
 import threading
-import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel
 
-from .checker import check_in_copy
 from .config import Settings, load_settings
-from .editor import apply_changes, resolve, undo_last
+from .editor import undo_last
 from .health import HealthStore, health_path, ranked, task_for, verify_fixed
 from .health import scan as run_scan
 from .history import load_history
 from .ledger import Ledger, ledger_path
-from .llm import ConfigError, ContextTooLongError, LLMError, Reply, Usage, make_llm
-from .pipeline import Result, run
-from .pricing import format_usd, price_for, reply_cost, usage_cost
-from .prompts import (
-    EXPLAIN_SYSTEM,
-    PLAN_EDIT_SYSTEM,
-    PLAN_SYSTEM,
-    REVIEW_SYSTEM,
-    ROUTE_SYSTEM,
-)
+from .llm import Usage, make_llm
+from .pipeline import Result
+from .pricing import price_for, usage_cost
 from .release import GuardError, assess
 from .repo_map import build_map, estimate_tokens, list_source_files
-from .selector import normalize_path
+from .services import ServiceError
+from .services.assistant import MODEL_ERRORS, Assistant
+from .services.changes import (
+    SPEND_METHODS,
+    apply_proposal,
+    budget,
+    commit_paths,
+    is_git_repo,
+    require_budget,
+)
+from .services.chat import take_turn
+from .services.records import (  # noqa: F401 - parse_plan is part of this module's API
+    load_plan,
+    load_session,
+    new_session,
+    parse_plan,
+    plan_markdown,
+    plan_summaries,
+    save_plan,
+    save_session,
+    session_summaries,
+    set_thread_status,
+)
 from .textio import read_source
 
 STATIC_PAGE = Path(__file__).parent / "static" / "index.html"
-MAX_THREADS = 8
-LEVELS = ("easy", "medium", "hard")
-THREAD_STATUSES = ("pending", "done", "skipped")
-INTENTS = ("change", "refine", "explain", "plan")
-ID_PATTERN = re.compile(r"^[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$")
-MODEL_ERRORS = (ConfigError, LLMError, ContextTooLongError)
 INSTRUCTION_TOKENS = 300  # rough size of the editor's instructions, for the estimate
-HISTORY_MESSAGES = 6  # how many earlier messages each turn sees
-CONTEXT_CHARS = 8000  # per file, when files are shown to explain a question
-SPEND_METHODS = ("tokenwise", "plan", "chat")  # ledger methods that count toward the budget
 
 
 class AskBody(BaseModel):
@@ -147,199 +150,6 @@ def project_ids(roots: list[Path | str]) -> dict[str, Path]:
     return ids
 
 
-def new_id(now: datetime | None = None) -> str:
-    now = now or datetime.now()
-    return f"{now:%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
-
-
-def parse_json(text: str, opening: str):
-    """The first JSON object ("{") or array ("[") in a reply, or None."""
-    pattern = r"\{.*\}" if opening == "{" else r"\[.*\]"
-    match = re.search(pattern, text, re.S)
-    if not match:
-        return None
-    try:
-        return json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return None
-
-
-def parse_plan(text: str, files: list[str]) -> list[dict]:
-    """Work threads from the planner's reply. Unknown files are dropped; bad items are skipped."""
-    items = parse_json(text, "[")
-    if not isinstance(items, list):
-        return []
-    known = set(files)
-    threads: list[dict] = []
-    for item in items:
-        if len(threads) >= MAX_THREADS:
-            break
-        if not isinstance(item, dict):
-            continue
-        title = str(item.get("title") or "").strip()
-        prompt = str(item.get("prompt") or "").strip()
-        if not title or not prompt:
-            continue
-        paths: list[str] = []
-        for raw in item.get("files") or []:
-            path = normalize_path(str(raw))
-            if path in known and path not in paths:
-                paths.append(path)
-        level = item.get("level") if item.get("level") in LEVELS else "medium"
-        deps = [
-            d
-            for d in item.get("depends_on") or []
-            if isinstance(d, int) and not isinstance(d, bool) and 0 <= d < len(threads)
-        ]
-        threads.append(
-            {
-                "index": len(threads),
-                "title": title,
-                "prompt": prompt,
-                "files": paths[:3],
-                "check": str(item.get("check") or "").strip(),
-                "level": level,
-                "depends_on": sorted(set(deps)),
-                "status": "pending",
-            }
-        )
-    return threads
-
-
-def plan_dir(settings: Settings) -> Path:
-    return settings.state_dir / "plans"
-
-
-def save_plan(settings: Settings, plan: dict) -> None:
-    directory = plan_dir(settings)
-    directory.mkdir(parents=True, exist_ok=True)
-    (directory / f"{plan['id']}.json").write_text(
-        json.dumps(plan, ensure_ascii=False, indent=2), "utf-8"
-    )
-
-
-def load_plan(settings: Settings, plan_id: str) -> dict:
-    path = plan_dir(settings) / f"{plan_id}.json"
-    if not ID_PATTERN.match(plan_id) or not path.exists():
-        raise HTTPException(404, "Bu plan bulunamadı.")
-    return json.loads(path.read_text("utf-8"))
-
-
-def plan_summaries(settings: Settings) -> list[dict]:
-    if not plan_dir(settings).exists():
-        return []
-    plans = [json.loads(p.read_text("utf-8")) for p in plan_dir(settings).glob("*.json")]
-    plans.sort(key=lambda p: p["id"], reverse=True)
-    return [
-        {
-            "id": p["id"],
-            "goal": p["goal"],
-            "created": p["created"],
-            "total": len(p["threads"]),
-            "done": sum(t["status"] == "done" for t in p["threads"]),
-        }
-        for p in plans
-    ]
-
-
-def plan_markdown(plan: dict) -> str:
-    lines = [f"# {plan['goal']}", "", f"{plan['created']} · model: {plan['model']}", ""]
-    for t in plan["threads"]:
-        mark = {"done": "x", "skipped": "-"}.get(t["status"], " ")
-        lines.append(f"## [{mark}] {t['index'] + 1}. {t['title']} ({t['level']})")
-        if t["depends_on"]:
-            lines.append("Önce: " + ", ".join(str(i + 1) for i in t["depends_on"]))
-        if t["files"]:
-            lines.append("Dosyalar: " + ", ".join(t["files"]))
-        lines += ["", t["prompt"], ""]
-        if t["check"]:
-            lines += [f"Kontrol: `{t['check']}`", ""]
-    return "\n".join(lines)
-
-
-def sessions_dir(settings: Settings) -> Path:
-    return settings.state_dir / "sessions"
-
-
-def new_session(title: str) -> dict:
-    now = datetime.now()
-    return {
-        "id": new_id(now),
-        "title": (title.strip() or "Yeni oturum")[:60],
-        "created": now.isoformat(timespec="seconds"),
-        "messages": [],
-        "pending": None,  # a question waiting for the user's answer
-        "last_proposal": None,  # what "düzelt" refers to
-    }
-
-
-def save_session(settings: Settings, session: dict) -> None:
-    directory = sessions_dir(settings)
-    directory.mkdir(parents=True, exist_ok=True)
-    (directory / f"{session['id']}.json").write_text(
-        json.dumps(session, ensure_ascii=False, indent=2), "utf-8"
-    )
-
-
-def load_session(settings: Settings, session_id: str) -> dict:
-    path = sessions_dir(settings) / f"{session_id}.json"
-    if not ID_PATTERN.match(session_id) or not path.exists():
-        raise HTTPException(404, "Bu oturum bulunamadı.")
-    return json.loads(path.read_text("utf-8"))
-
-
-def session_summaries(settings: Settings) -> list[dict]:
-    if not sessions_dir(settings).exists():
-        return []
-    sessions = [json.loads(p.read_text("utf-8")) for p in sessions_dir(settings).glob("*.json")]
-    sessions.sort(key=lambda s: s["id"], reverse=True)
-    return [
-        {"id": s["id"], "title": s["title"], "created": s["created"], "count": len(s["messages"])}
-        for s in sessions
-    ]
-
-
-def message(role: str, kind: str, content: str, **extra) -> dict:
-    return {
-        "role": role,
-        "kind": kind,
-        "content": content,
-        "created": datetime.now().isoformat(timespec="seconds"),
-        **extra,
-    }
-
-
-def history_text(messages: list[dict]) -> str:
-    recent = messages[-HISTORY_MESSAGES:]
-    return "\n".join(f"{m['role']} ({m['kind']}): {m['content'][:300]}" for m in recent)
-
-
-def read_context(root: Path, files: list[str]) -> str:
-    return "\n\n".join(
-        f"{f}:\n```\n{read_source(root / f, strict=False)[:CONTEXT_CHARS]}\n```" for f in files[:4]
-    )
-
-
-def record_reply(settings: Settings, text: str, reply: Reply, method: str = "chat") -> None:
-    ledger = Ledger(ledger_path(settings))
-    try:
-        ledger.record(Result(request=text, replies=[reply], prices=settings.prices), method)
-    finally:
-        ledger.close()
-
-
-def is_git_repo(root: Path) -> bool:
-    try:
-        done = subprocess.run(
-            ["git", "-C", str(root), "rev-parse", "--is-inside-work-tree"],
-            capture_output=True,
-            text=True,
-        )
-    except OSError:  # git is not installed
-        return False
-    return done.returncode == 0
-
-
 def create_app(roots, llm_factory=None, token: str = "") -> FastAPI:
     """The app for one or more projects. `llm_factory(settings)` returns the model client;
     tests pass a fake one. A non-empty `token` must be sent as X-Tokenwise-Token on /api calls."""
@@ -348,6 +158,10 @@ def create_app(roots, llm_factory=None, token: str = "") -> FastAPI:
     factory = llm_factory or make_llm
     projects = {pid: Project(pid, root) for pid, root in project_ids(list(roots)).items()}
     app = FastAPI(title="tokenwise")
+
+    @app.exception_handler(ServiceError)
+    async def service_error(request: Request, exc: ServiceError) -> JSONResponse:
+        return JSONResponse({"detail": exc.message}, status_code=exc.status)
 
     if token:
 
@@ -366,123 +180,28 @@ def create_app(roots, llm_factory=None, token: str = "") -> FastAPI:
             raise HTTPException(404, "Proje bulunamadı.")
         return found
 
-    def spent_last_week(settings: Settings) -> float:
-        ledger = Ledger(ledger_path(settings))
+    def assistant(settings: Settings) -> Assistant:
+        return Assistant(settings, factory)
+
+    def proposer(proj: Project, helper: Assistant):
+        """Runs one proposal and keeps it in memory, so it can be applied, committed or
+        reviewed; returns (run id, result, diff)."""
+
+        def propose(request: str, model: str, files: list[str]):
+            run_id, result = helper.propose(request, model, files)
+            diff = "\n".join(c.diff for c in result.changes)
+            if result.changes:
+                proj.pending[run_id] = result
+                proj.diffs[run_id] = (request, diff)
+            return run_id, result, diff
+
+        return propose
+
+    def model_call(fn, *args, **kwargs):
         try:
-            return sum(ledger.summary(7, method=m)["cost_usd"] for m in SPEND_METHODS)
-        finally:
-            ledger.close()
-
-    def over_budget(settings: Settings) -> tuple[float, float] | None:
-        spent = spent_last_week(settings)
-        limit = settings.budget_usd_week
-        return (spent, limit) if limit and spent >= limit else None
-
-    def cheap_model(settings: Settings) -> str:
-        return settings.models[0]
-
-    def middle_model(settings: Settings) -> str:
-        return settings.models[min(1, len(settings.models) - 1)]
-
-    # --- the steps a turn can take -------------------------------------------------------
-
-    def propose(proj: Project, settings: Settings, request: str, model: str, files: list[str]):
-        """One change proposal. Kept in memory so it can be applied, committed or reviewed."""
-        result = run(request, settings, factory(settings), model, files or None)
-        ledger = Ledger(ledger_path(settings))
-        try:
-            run_id = ledger.record(result)
-        finally:
-            ledger.close()
-        if result.changes:
-            proj.pending[run_id] = result
-            proj.diffs[run_id] = (request, "\n".join(c.diff for c in result.changes))
-        return run_id, result
-
-    def classify(settings: Settings, text: str, history: str, files: list[str], has_proposal):
-        """Asks the cheapest model what the user wants and whether anything essential is missing."""
-        reply = factory(settings).complete(
-            model=cheap_model(settings),
-            system=ROUTE_SYSTEM.format(
-                history=history or "(yok)", files=", ".join(files[:80]) or "(yok)"
-            ),
-            prompt=text,
-            max_tokens=200,
-        )
-        reply.role = "router"
-        record_reply(settings, text, reply)
-        data = parse_json(reply.text, "{") or {}
-        intent = data.get("intent") if data.get("intent") in INTENTS else "change"
-        if intent == "refine" and not has_proposal:
-            intent = "change"
-        questions = [str(q).strip() for q in data.get("questions") or [] if str(q).strip()][:3]
-        ready = data.get("ready") is not False or not questions
-        return intent, ready, questions
-
-    def explain(settings: Settings, text: str, history: str, context: str) -> str:
-        reply = factory(settings).complete(
-            model=middle_model(settings),
-            system=EXPLAIN_SYSTEM.format(history=history or "(yok)", context=context),
-            prompt=text,
-            max_tokens=1200,
-        )
-        reply.role = "explainer"
-        record_reply(settings, text, reply)
-        return reply.text.strip()
-
-    def plan_core(settings: Settings, goal: str, model: str) -> dict:
-        files = list_source_files(settings)
-        model = model or middle_model(settings)
-        # The planner reads the whole map, so it is the middle rung: smarter than the selector,
-        # cheaper than the top model.
-        system = PLAN_SYSTEM.format(max_threads=MAX_THREADS, repo_map=build_map(settings, files))
-        reply = factory(settings).complete(model=model, system=system, prompt=goal, max_tokens=2000)
-        reply.role = "planner"
-        record_reply(settings, goal, reply, "plan")
-        threads = parse_plan(reply.text, files)
-        if not threads:
-            raise HTTPException(
-                502, "Model geçerli bir iş listesi üretemedi. Hedefi biraz daha ayrıntılı yaz."
-            )
-        now = datetime.now()
-        record = {
-            "id": new_id(now),
-            "goal": goal,
-            "model": model,
-            "created": now.isoformat(timespec="seconds"),
-            "cost_usd": reply_cost(reply, settings.prices),
-            "threads": threads,
-        }
-        save_plan(settings, record)
-        return record
-
-    def plan_edit_core(settings: Settings, record: dict, instruction: str, model: str) -> dict:
-        files = list_source_files(settings)
-        current = [
-            {k: t[k] for k in ("title", "prompt", "files", "check", "level", "depends_on")}
-            for t in record["threads"]
-        ]
-        reply = factory(settings).complete(
-            model=model or middle_model(settings),
-            system=PLAN_EDIT_SYSTEM.format(
-                current=json.dumps(current, ensure_ascii=False, indent=1),
-                repo_map=build_map(settings, files),
-                max_threads=MAX_THREADS,
-            ),
-            prompt=instruction,
-            max_tokens=2500,
-        )
-        reply.role = "planner"
-        record_reply(settings, instruction, reply)
-        threads = parse_plan(reply.text, files)
-        if not threads:
-            raise HTTPException(502, "Plan düzenlenemedi. Talimatı daha açık yaz.")
-        old_status = {t["title"]: t["status"] for t in record["threads"]}
-        for t in threads:  # threads kept under the same title keep their status
-            t["status"] = old_status.get(t["title"], "pending")
-        record["threads"] = threads
-        save_plan(settings, record)
-        return record
+            return fn(*args, **kwargs)
+        except MODEL_ERRORS as exc:
+            raise HTTPException(400, str(exc)) from None
 
     # --- routes --------------------------------------------------------------------------
 
@@ -508,7 +227,7 @@ def create_app(roots, llm_factory=None, token: str = "") -> FastAPI:
             "check": settings.check,
             "git": is_git_repo(proj.root),
             "budget": {
-                "spent_usd": spent_last_week(settings),
+                "spent_usd": budget(settings).spent,
                 "limit_usd": settings.budget_usd_week,
             },
         }
@@ -614,7 +333,7 @@ def create_app(roots, llm_factory=None, token: str = "") -> FastAPI:
             map_tokens + files_tokens + estimate_tokens(body.request) + INSTRUCTION_TOKENS
         )
         # Rough: input tokens at the cheapest model's price. Output is not counted.
-        est = usage_cost(Usage(input_tokens, 0), price_for(cheap_model(settings), settings.prices))
+        est = usage_cost(Usage(input_tokens, 0), price_for(settings.models[0], settings.prices))
         return {
             "input_tokens": input_tokens,
             "map_tokens": map_tokens,
@@ -627,20 +346,12 @@ def create_app(roots, llm_factory=None, token: str = "") -> FastAPI:
         proj = project(pid)
         with proj.lock:
             settings = load_settings(proj.root)
-            blocked = over_budget(settings)
-            if blocked and not body.over_budget:
-                spent, limit = blocked
-                raise HTTPException(
-                    409,
-                    f"Haftalık bütçe doldu: {format_usd(spent)} / {format_usd(limit)}. "
-                    "Yine de çalıştırmak için over_budget seçeneğini kullan.",
-                )
+            require_budget(settings, body.over_budget,
+                           "Yine de çalıştırmak için over_budget seçeneğini kullan.")  # fmt: skip
             if body.check:
                 settings.check = body.check
-            try:
-                run_id, result = propose(proj, settings, body.request, body.model, body.files)
-            except MODEL_ERRORS as exc:
-                raise HTTPException(400, str(exc)) from None
+            propose = proposer(proj, assistant(settings))
+            run_id, result, _ = model_call(propose, body.request, body.model, body.files)
             return {"run_id": run_id, **result.to_dict()}
 
     @app.post("/api/projects/{pid}/apply")
@@ -650,34 +361,10 @@ def create_app(roots, llm_factory=None, token: str = "") -> FastAPI:
             result = proj.pending.get(body.run_id)
             if result is None:
                 raise HTTPException(404, "Bu öneri yok ya da zaten uygulandı.")
-            settings = load_settings(proj.root)
-            # The proposal was made from the files as they were then; refuse if they changed.
-            for change in result.changes:
-                path = resolve(proj.root, change.path)
-                if change.old is None:
-                    stale = path.exists()
-                else:
-                    stale = not path.exists() or read_source(path, strict=False) != change.old
-                if stale:
-                    raise HTTPException(409, f"{change.path} değişmiş. İsteği yeniden çalıştır.")
-            apply_changes(settings, result.changes)
-            paths = [c.path for c in result.changes]
-            ledger = Ledger(ledger_path(settings))
-            try:
-                ledger.mark_applied(body.run_id)
-            finally:
-                ledger.close()
+            done = apply_proposal(load_settings(proj.root), body.run_id, result.changes)
             del proj.pending[body.run_id]
-            proj.applied[body.run_id] = (result.request, paths)
-            check = None
-            if settings.check:  # the project's tests, now that the change is in place
-                outcome = check_in_copy(settings, [], settings.check)
-                check = {
-                    "passed": outcome.passed,
-                    "skipped": outcome.skipped,
-                    "output": outcome.output[-2000:],
-                }
-            return {"applied": paths, "check": check}
+            proj.applied[body.run_id] = (result.request, done["applied"])
+            return done
 
     @app.post("/api/projects/{pid}/undo")
     def undo(pid: str) -> dict:
@@ -694,24 +381,10 @@ def create_app(roots, llm_factory=None, token: str = "") -> FastAPI:
         with proj.lock:
             if body.run_id not in proj.applied:
                 raise HTTPException(404, "Bu değişiklik uygulanmamış ya da commit edilmiş.")
-            if not is_git_repo(proj.root):
-                raise HTTPException(400, "Proje bir git deposu değil.")
             request, paths = proj.applied[body.run_id]
-            message_text = "tokenwise: " + " ".join(request.split())[:72]
-            # Only the paths tokenwise changed go into the commit, nothing else staged.
-            for args in (["add", "--", *paths], ["commit", "-m", message_text, "--", *paths]):
-                done = subprocess.run(
-                    ["git", "-C", str(proj.root), *args], capture_output=True, text=True
-                )
-                if done.returncode:
-                    raise HTTPException(400, (done.stderr or done.stdout).strip())
-            sha = subprocess.run(
-                ["git", "-C", str(proj.root), "rev-parse", "--short", "HEAD"],
-                capture_output=True,
-                text=True,
-            ).stdout.strip()
+            done = commit_paths(proj.root, request, paths)
             del proj.applied[body.run_id]
-            return {"commit": sha, "message": message_text}
+            return done
 
     @app.post("/api/projects/{pid}/runs/{run_id}/review")
     def review(pid: str, run_id: int) -> dict:
@@ -720,41 +393,16 @@ def create_app(roots, llm_factory=None, token: str = "") -> FastAPI:
             found = proj.diffs.get(run_id)
             if found is None:
                 raise HTTPException(404, "Bu öneri artık bellekte değil. İsteği yeniden gönder.")
-            settings = load_settings(proj.root)
             request, diff = found
-            model = middle_model(settings)
-            try:
-                reply = factory(settings).complete(
-                    model=model,
-                    system=REVIEW_SYSTEM,
-                    prompt=f"İstek: {request}\n\nDiff:\n{diff[:12000]}",
-                    max_tokens=600,
-                )
-            except MODEL_ERRORS as exc:
-                raise HTTPException(400, str(exc)) from None
-            reply.role = "reviewer"
-            record_reply(settings, request, reply)
-            return {
-                "review": reply.text.strip(),
-                "model": model,
-                "cost_usd": reply_cost(reply, settings.prices),
-            }
+            return model_call(assistant(load_settings(proj.root)).review, request, diff)
 
     @app.post("/api/projects/{pid}/plan")
     def plan(pid: str, body: PlanBody) -> dict:
         proj = project(pid)
         with proj.lock:
             settings = load_settings(proj.root)
-            blocked = over_budget(settings)
-            if blocked:
-                spent, limit = blocked
-                raise HTTPException(
-                    409, f"Haftalık bütçe doldu: {format_usd(spent)} / {format_usd(limit)}."
-                )
-            try:
-                return plan_core(settings, body.goal, body.model)
-            except MODEL_ERRORS as exc:
-                raise HTTPException(400, str(exc)) from None
+            require_budget(settings)
+            return model_call(assistant(settings).plan, body.goal, body.model)
 
     @app.get("/api/projects/{pid}/plans")
     def plans(pid: str) -> list[dict]:
@@ -770,24 +418,13 @@ def create_app(roots, llm_factory=None, token: str = "") -> FastAPI:
         with proj.lock:
             settings = load_settings(proj.root)
             record = load_plan(settings, plan_id)
-            try:
-                return plan_edit_core(settings, record, body.text, body.model)
-            except MODEL_ERRORS as exc:
-                raise HTTPException(400, str(exc)) from None
+            return model_call(assistant(settings).edit_plan, record, body.text, body.model)
 
     @app.put("/api/projects/{pid}/plans/{plan_id}/threads/{index}")
     def set_status(pid: str, plan_id: str, index: int, body: StatusBody) -> dict:
         proj = project(pid)
         with proj.lock:
-            settings = load_settings(proj.root)
-            if body.status not in THREAD_STATUSES:
-                raise HTTPException(400, "Durum pending, done ya da skipped olmalı.")
-            record = load_plan(settings, plan_id)
-            if not 0 <= index < len(record["threads"]):
-                raise HTTPException(404, "Bu iş parçacığı yok.")
-            record["threads"][index]["status"] = body.status
-            save_plan(settings, record)
-            return record["threads"][index]
+            return set_thread_status(load_settings(proj.root), plan_id, index, body.status)
 
     @app.get("/api/projects/{pid}/plans/{plan_id}/export")
     def export(pid: str, plan_id: str) -> PlainTextResponse:
@@ -802,9 +439,8 @@ def create_app(roots, llm_factory=None, token: str = "") -> FastAPI:
     def start_session(pid: str, body: SessionBody) -> dict:
         proj = project(pid)
         with proj.lock:
-            settings = load_settings(proj.root)
             session = new_session(body.title)
-            save_session(settings, session)
+            save_session(load_settings(proj.root), session)
             return session
 
     @app.get("/api/projects/{pid}/sessions/{session_id}")
@@ -818,109 +454,11 @@ def create_app(roots, llm_factory=None, token: str = "") -> FastAPI:
         with proj.lock:
             settings = load_settings(proj.root)
             session = load_session(settings, session_id)
-            blocked = over_budget(settings)
-            if blocked and not body.over_budget:
-                spent, limit = blocked
-                raise HTTPException(
-                    409, f"Haftalık bütçe doldu: {format_usd(spent)} / {format_usd(limit)}."
-                )
-            if body.intent not in ("auto", *INTENTS):
-                raise HTTPException(400, "Niyet auto, change, refine, explain ya da plan olmalı.")
-
-            all_files = list_source_files(settings)
-            user_text = body.text.strip()
-            new_messages = [message("user", "text", user_text)]
-            history = history_text(session["messages"])
-            last = session.get("last_proposal")
-            pending = session.get("pending")
-            try:
-                if pending and body.intent == "auto":  # this message answers the questions
-                    text, intent, ready, questions = (
-                        f"{pending['text']}\nEk bilgi: {user_text}",
-                        pending["intent"],
-                        True,
-                        [],
-                    )
-                    session["pending"] = None
-                elif body.intent == "auto":
-                    text = user_text
-                    intent, ready, questions = classify(
-                        settings, text, history, all_files, last is not None
-                    )
-                    session["pending"] = None
-                else:
-                    text, intent, ready, questions = user_text, body.intent, True, []
-                    if intent == "refine" and last is None:
-                        intent = "change"
-                    session["pending"] = None
-
-                if not ready:
-                    session["pending"] = {
-                        "text": pending["text"] if pending else user_text,
-                        "intent": intent,
-                    }
-                    new_messages.append(
-                        message(
-                            "assistant",
-                            "question",
-                            "Önce şunları netleştirelim:",
-                            questions=questions,
-                        )
-                    )
-                elif intent == "explain":
-                    files = body.files or (last["files"] if last else [])
-                    context = (
-                        read_context(proj.root, files) if files else build_map(settings, all_files)
-                    )
-                    answer = explain(settings, text, history, context[: CONTEXT_CHARS * 2])
-                    new_messages.append(message("assistant", "explain", answer))
-                elif intent == "plan":
-                    record = plan_core(settings, text, body.model)
-                    new_messages.append(
-                        message(
-                            "assistant",
-                            "plan",
-                            f"{len(record['threads'])} iş parçacığına ayırdım.",
-                            plan_id=record["id"],
-                        )
-                    )
-                else:
-                    request, files = text, body.files
-                    if intent == "refine" and last is not None:
-                        request = (
-                            f"{last['request']}\n\nÖnceki öneri şu değişikliği yaptı:\n"
-                            f"{last['diff']}\n\nKullanıcının düzeltme isteği: {text}\n"
-                            "Bu düzeltmeyi uygula; öneriden doğru kalan kısımları koru."
-                        )
-                        files = last["files"]
-                    run_id, result = propose(proj, settings, request, body.model, files)
-                    if result.changes:
-                        session["last_proposal"] = {
-                            "run_id": run_id,
-                            "request": request,
-                            "files": result.files,
-                            "diff": proj.diffs[run_id][1][:8000],
-                        }
-                        summary = f"{len(result.changes)} dosyada değişiklik önerildi."
-                    else:
-                        summary = result.error or "Değişiklik çıkmadı."
-                    new_messages.append(
-                        message(
-                            "assistant",
-                            "proposal",
-                            summary,
-                            run_id=run_id,
-                            data={"run_id": run_id, **result.to_dict()},
-                        )
-                    )
-            except MODEL_ERRORS as exc:
-                new_messages.append(message("assistant", "error", str(exc)))
-
-            session["messages"] += new_messages
+            require_budget(settings, body.over_budget)
+            helper = assistant(settings)
+            messages, intent = take_turn(helper, session, body.text, body.intent, body.files,
+                                         body.model, proposer(proj, helper))  # fmt: skip
             save_session(settings, session)
-            return {
-                "messages": new_messages,
-                "intent": intent if "intent" in dir() else body.intent,
-            }
+            return {"messages": messages, "intent": intent}
 
     return app

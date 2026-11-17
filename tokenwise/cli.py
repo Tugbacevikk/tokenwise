@@ -23,6 +23,7 @@ from .llm import LLM, CachedLLM, ConfigError, ContextTooLongError, LLMError, cac
 from .pipeline import Result, run
 from .pricing import format_usd, reply_cost
 from .repo_map import estimate_tokens, fit_map, list_source_files, source_tokens
+from .services.changes import budget
 from .textio import read_source
 
 app = typer.Typer(
@@ -184,62 +185,22 @@ def ask(
     """Make a code change with the least context and the fewest lines."""
     settings = load_settings(root)
     ledger = Ledger(ledger_path(settings))
-    spent = ledger.summary(7)["cost_usd"]
-    budget = settings.budget_usd_week
-    if budget and spent >= budget and not over_budget:
+    state = budget(settings, methods=None)
+    if state.used_up and not over_budget:
         _fail(
-            f"Weekly budget used up: {format_usd(spent)} of {format_usd(budget)} "
+            f"Weekly budget used up: {format_usd(state.spent)} of {format_usd(state.limit)} "
             "in the last 7 days. Raise budget_usd_week in tokenwise.toml or pass --over-budget.",
             as_json,
         )
-    if no_cache:
-        settings.cache = False
-    if check:
-        settings.check = check
-    if no_check:
-        settings.check = ""
-    try:
-        llm = make_llm(settings)
-    except ConfigError as exc:
-        _fail(str(exc), as_json)
-
-    try:
-        if as_json:
-            result = run(request, settings, llm, model)
-        else:
-            with console.status("Choosing files and writing the change..."):
-                result = run(request, settings, llm, model)
-    except LLMError as exc:
-        _fail(str(exc), as_json)
-    except Exception as exc:  # the editor shows this to the user, so never crash silently
-        if not as_json:
-            raise
-        _fail(f"{type(exc).__name__}: {exc}", as_json=True)
-
+    settings.cache = settings.cache and not no_cache
+    settings.check = "" if no_check else (check or settings.check)
+    result = _run_request(request, settings, model, as_json)
     run_id = ledger.record(result)
-    budget_note = ""
-    if budget:
-        spent += result.cost
-        budget_note = f"{format_usd(spent)} of {format_usd(budget)} weekly budget used"
-
+    spent = state.spent + result.cost
     if as_json:
-        if result.ok:
-            _save_pending(settings, run_id, result)
-        if result.changes and result.check_passed is False:
-            _save_pending(settings, run_id, result)  # the user may still choose to apply it
-        budget_info = {"budget_usd_week": budget, "spent_7d_usd": round(spent, 6)}
-        print(json.dumps({"run_id": run_id, **result.to_dict(), **budget_info}))
-        raise typer.Exit(0 if result.ok else 1)
-
-    if result.files:
-        console.print(f"Files: [cyan]{', '.join(result.files)}[/]")
-    if result.models:
-        console.print(f"Difficulty: [cyan]{result.level}[/] → {' → '.join(result.models)}")
+        _print_json(settings, run_id, result, spent)
+    _show_result(result)
     if result.changes and result.check_passed is False:
-        for change in result.changes:
-            console.print(
-                Syntax(change.diff, "diff", theme="ansi_dark", background_color="default")
-            )
         console.print(f"[red]Check failed:[/] {result.check}")
         console.print(result.check_output, markup=False, highlight=False)
         console.print(_usage_table(result))
@@ -250,21 +211,7 @@ def ask(
         console.print(f"[red]No change produced:[/] {result.error}")
         console.print(_usage_table(result))
         raise typer.Exit(1)
-
-    for change in result.changes:
-        console.print(Syntax(change.diff, "diff", theme="ansi_dark", background_color="default"))
-    if result.check_passed:
-        console.print(f"[green]Check passed:[/] {result.check}")
-    console.print(_usage_table(result))
-    added, removed = result.lines
-    console.print(
-        f"{len(result.changes)} file(s) · [green]+{added}[/] [red]-{removed}[/] lines · "
-        f"by {result.model}"
-    )
-    if budget_note:
-        color = "yellow" if spent >= 0.8 * budget else "dim"
-        console.print(f"[{color}]{budget_note}[/]")
-
+    _show_summary(result, spent, state.limit)
     if dry_run:
         _save_pending(settings, run_id, result)
         console.print("Not applied. Apply later with: tokenwise apply")
@@ -274,6 +221,57 @@ def ask(
         console.print("[green]Applied.[/] Undo with: tokenwise undo")
     else:
         console.print("Nothing changed.")
+
+
+def _run_request(request: str, settings, model: str, as_json: bool) -> Result:
+    try:
+        llm = make_llm(settings)
+    except ConfigError as exc:
+        _fail(str(exc), as_json)
+    try:
+        if as_json:
+            return run(request, settings, llm, model)
+        with console.status("Choosing files and writing the change..."):
+            return run(request, settings, llm, model)
+    except LLMError as exc:
+        _fail(str(exc), as_json)
+    except Exception as exc:  # the editor shows this to the user, so never crash silently
+        if not as_json:
+            raise
+        _fail(f"{type(exc).__name__}: {exc}", as_json=True)
+    raise AssertionError("unreachable")  # _fail always exits
+
+
+def _print_json(settings, run_id: int, result: Result, spent: float) -> None:
+    # a failed check still leaves the proposal: the user may choose to apply it anyway
+    if result.ok or (result.changes and result.check_passed is False):
+        _save_pending(settings, run_id, result)
+    budget_info = {"budget_usd_week": settings.budget_usd_week, "spent_7d_usd": round(spent, 6)}
+    print(json.dumps({"run_id": run_id, **result.to_dict(), **budget_info}))
+    raise typer.Exit(0 if result.ok else 1)
+
+
+def _show_result(result: Result) -> None:
+    if result.files:
+        console.print(f"Files: [cyan]{', '.join(result.files)}[/]")
+    if result.models:
+        console.print(f"Difficulty: [cyan]{result.level}[/] → {' → '.join(result.models)}")
+    for change in result.changes:
+        console.print(Syntax(change.diff, "diff", theme="ansi_dark", background_color="default"))
+
+
+def _show_summary(result: Result, spent: float, limit: float) -> None:
+    if result.check_passed:
+        console.print(f"[green]Check passed:[/] {result.check}")
+    console.print(_usage_table(result))
+    added, removed = result.lines
+    console.print(
+        f"{len(result.changes)} file(s) · [green]+{added}[/] [red]-{removed}[/] lines · "
+        f"by {result.model}"
+    )
+    if limit:
+        color = "yellow" if spent >= 0.8 * limit else "dim"
+        console.print(f"[{color}]{format_usd(spent)} of {format_usd(limit)} weekly budget used[/]")
 
 
 @app.command()

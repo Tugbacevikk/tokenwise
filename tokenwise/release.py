@@ -190,151 +190,171 @@ def assess(settings: Settings, base: str = "") -> RiskReport:
 def score_change(
     change: ChangeInput, base: str, weights: dict[str, float], check: str = ""
 ) -> RiskReport:
-    stats, sources, graph, history = change.stats, change.sources, change.graph, change.history
-    changed = sorted(p for p in stats if p in sources)
-    tests_changed = [p for p in changed if is_test_file(p)]
-    code_changed = [p for p in changed if not is_test_file(p)]
-    added = sum(a for a, _ in stats.values())
-    removed = sum(r for _, r in stats.values())
-
-    # tests that import the change are coverage, not impact
-    affected = {f: d for f, d in graph.affected(code_changed).items() if not is_test_file(f)}
-    co_changed = [c for c in history.co_changed(changed, min_count=3) if c[0] in sources][:8]
-
-    signals: list[Signal] = []
-    checklist: list[str] = []
-    suggestions: list[dict] = []
-
-    # 1. impact: how much of the project imports what changed
-    direct = sorted(f for f, d in affected.items() if d == 1)
-    indirect = sorted(f for f, d in affected.items() if d > 1)
-    reasons = []
-    if direct:
-        reasons.append(f"{len(direct)} dosya doğrudan etkileniyor: {_few(direct)}")
-    if indirect:
-        reasons.append(f"{len(indirect)} dosya dolaylı etkileniyor: {_few(indirect)}")
-    reasons += describe(change.functions)
-    if co_changed:
-        reasons.append(
-            "Geçmişte birlikte değişen ama bu PR'da olmayan: "
-            + ", ".join(f"{o} ({n} kez, {m} ile)" for o, m, n in co_changed[:3])
-        )
-        for other, mine, count in co_changed[:3]:
-            checklist.append(f"`{other}` dosyasını kontrol et: {count} kez `{mine}` ile değişti")
-    impact = min(1.0, (len(direct) + 0.5 * len(indirect) + len(co_changed)) / 10)
-    signals.append(Signal("impact", impact, weights["impact"], "high", reasons or ["Etki yok"]))
-
-    # 2. history: were these files fixed often?
-    fixes = {p: history.fixes[p] for p in code_changed if history.fixes[p]}
-    churn = {p: history.churn[p] for p in code_changed if history.churn[p]}
-    worst = max(fixes.values(), default=0)
-    reasons = [f"`{p}`: {n} hata düzeltmesi, {churn.get(p, 0)} commit" for p, n in
-               sorted(fixes.items(), key=lambda x: -x[1])[:4]]  # fmt: skip
-    known = len(history.commits)
-    confidence = "high" if known >= 50 else "low" if known < 10 else "medium"
-    if confidence != "high":
-        reasons.append(f"Geçmiş kısa ({known} commit); bu sinyal zayıf")
-    signals.append(
-        Signal("history", min(1.0, worst / 5), weights["history"], confidence,
-               reasons or ["Değişen dosyalarda geçmiş hata düzeltmesi yok"])
-    )  # fmt: skip
-
-    # 3. tests: changed code that no test covers
-    untested = [p for p in code_changed if not graph.tested(p)]
-    reasons = []
-    if untested:
-        reasons.append(f"Testi olmayan değişen dosya: {_few(untested)}")
-    if code_changed and not tests_changed:
-        # Shown, but not scored: on 10 real repositories, commits that changed no test needed a
-        # later fix less often than those that did (AUC 0.36-0.45), because touching tests
-        # marks a change of behaviour. See docs/measurements.md.
-        reasons.append("Bu PR hiçbir test dosyasını değiştirmiyor")
-    test_value = len(untested) / len(code_changed) if code_changed else 0.0
-    signals.append(Signal("tests", min(1.0, test_value), weights["tests"], "medium",
-                          reasons or ["Değişen kod testlerle kapsanıyor"]))  # fmt: skip
-    no_test = [f for f in change.functions if not f.tests and f.callers]
-    if no_test:
-        reasons.append(
-            "Kullanılan ama hiçbir testin çağırmadığı değişen fonksiyon: "
-            + ", ".join(f"`{f.function}`" for f in no_test[:4])
-        )
-    called = [f for f in change.functions if f.tests]
-    if called:
-        tests = sorted({t.split(":", 1)[0] for f in called for t in f.tests})
-        checklist.append(f"Değişen fonksiyonları çağıran testleri çalıştır: {_few(tests)}")
-    for path in untested[:5]:
-        checklist.append(f"`{path}` için test ekle")
-        suggestions.append(
-            {
-                "title": f"{path} için test yaz",
-                "request": f"{path} dosyasındaki değişen davranış için testler yaz. "
-                "Mevcut test düzenini izle; kodu değiştirme.",
-                "files": [path],
-            }
-        )
-
-    # 4. criticality: how many files depend on what changed
-    fan = {p: graph.fan_in(p) for p in code_changed if graph.fan_in(p)}
-    top_fan = max(fan.values(), default=0)
-    reasons = [f"`{p}` dosyasını {n} dosya içe aktarıyor" for p, n in
-               sorted(fan.items(), key=lambda x: -x[1])[:3]]  # fmt: skip
-    signals.append(Signal("criticality", min(1.0, top_fan / 8), weights["criticality"], "high",
-                          reasons or ["Değişen dosyalara bağımlı dosya yok"]))  # fmt: skip
-
-    # 5. complexity of the changed Python files as they are now
-    complex_hits = []
-    for path in code_changed:
-        if not path.endswith(".py"):
-            continue
-        try:
-            source = change.read(path)
-        except (OSError, ValueError, KeyError):
-            continue
-        complex_hits += [f for f in python_findings(path, source) if f.rule == "high-complexity"]
-    reasons = [f"`{f.file}` {f.title}" for f in complex_hits[:4]]
-    reasons = reasons or ["Değişen dosyalarda yüksek karmaşıklık yok"]
-    value = min(1.0, len(complex_hits) / 4)
-    signals.append(Signal("complexity", value, weights["complexity"], "high", reasons))
-    for f in complex_hits[:2]:
-        suggestions.append(
-            {
-                "title": f"{f.data.get('function', f.file)} fonksiyonunu sadeleştir",
-                "request": f"{f.file} içindeki {f.data.get('function')} fonksiyonunu davranışı "
-                "değiştirmeden daha küçük, okunur parçalara böl.",
-                "files": [f.file],
-            }
-        )
-
-    # 6. size
-    size = added + removed
-    signals.append(Signal("size", min(1.0, size / 600), weights["size"], "high",
-                          [f"{len(stats)} dosya, +{added} −{removed} satır"]))  # fmt: skip
-
+    scoring = _Scoring(change, weights)
+    signals = [
+        scoring.impact(),
+        scoring.history(),
+        scoring.tests(),
+        scoring.criticality(),
+        scoring.complexity(),
+        scoring.size(),
+    ]
+    checklist = scoring.checklist
     if check:
         checklist.append(f"Proje kontrolünü çalıştır: `{check}`")
-    if direct:
-        checklist.append(f"Etkilenen modülleri gözden geçir: {_few(direct)}")
+    if scoring.direct:
+        checklist.append(f"Etkilenen modülleri gözden geçir: {_few(scoring.direct)}")
     ai_commits = sum(c.ai_assisted for c in change.commits)
     if ai_commits:
         checklist.append(
             f"{ai_commits} commit AI yardımıyla yazılmış: testleri ve kenar durumları elle doğrula"
         )
-
     return RiskReport(
         base=base,
-        changed=changed,
-        tests_changed=tests_changed,
-        affected=affected,
-        co_changed=co_changed,
-        lines_added=added,
-        lines_removed=removed,
+        changed=scoring.changed,
+        tests_changed=scoring.tests_changed,
+        affected=scoring.affected,
+        co_changed=scoring.co_changed,
+        lines_added=scoring.added,
+        lines_removed=scoring.removed,
         signals=signals,
         checklist=checklist,
-        suggestions=suggestions,
+        suggestions=scoring.suggestions,
         ai_commits=ai_commits,
         commits=len(change.commits),
         functions=[f.to_dict() for f in change.functions],
     )
+
+
+class _Scoring:
+    """The six signals of one change. Each method returns its Signal and adds what it found to
+    the shared checklist and Agent suggestions."""
+
+    def __init__(self, change: ChangeInput, weights: dict[str, float]) -> None:
+        self.change, self.weights = change, weights
+        stats, graph = change.stats, change.graph
+        self.changed = sorted(p for p in stats if p in change.sources)
+        self.tests_changed = [p for p in self.changed if is_test_file(p)]
+        self.code = [p for p in self.changed if not is_test_file(p)]
+        self.added = sum(a for a, _ in stats.values())
+        self.removed = sum(r for _, r in stats.values())
+        # tests that import the change are coverage, not impact
+        self.affected = {f: d for f, d in graph.affected(self.code).items()
+                         if not is_test_file(f)}  # fmt: skip
+        self.direct = sorted(f for f, d in self.affected.items() if d == 1)
+        self.co_changed = [c for c in change.history.co_changed(self.changed, min_count=3)
+                           if c[0] in change.sources][:8]  # fmt: skip
+        self.checklist: list[str] = []
+        self.suggestions: list[dict] = []
+
+    def _signal(self, name: str, value: float, confidence: str, reasons: list[str],
+                empty: str) -> Signal:  # fmt: skip
+        return Signal(name, min(1.0, value), self.weights[name], confidence, reasons or [empty])
+
+    def impact(self) -> Signal:
+        """How much of the project imports what changed."""
+        indirect = sorted(f for f, d in self.affected.items() if d > 1)
+        reasons = []
+        if self.direct:
+            reasons.append(f"{len(self.direct)} dosya doğrudan etkileniyor: {_few(self.direct)}")
+        if indirect:
+            reasons.append(f"{len(indirect)} dosya dolaylı etkileniyor: {_few(indirect)}")
+        reasons += describe(self.change.functions)
+        if self.co_changed:
+            reasons.append(
+                "Geçmişte birlikte değişen ama bu PR'da olmayan: "
+                + ", ".join(f"{o} ({n} kez, {m} ile)" for o, m, n in self.co_changed[:3])
+            )
+            for other, mine, count in self.co_changed[:3]:
+                self.checklist.append(
+                    f"`{other}` dosyasını kontrol et: {count} kez `{mine}` ile değişti"
+                )
+        value = (len(self.direct) + 0.5 * len(indirect) + len(self.co_changed)) / 10
+        return self._signal("impact", value, "high", reasons, "Etki yok")
+
+    def history(self) -> Signal:
+        """Were these files fixed often?"""
+        history = self.change.history
+        fixes = {p: history.fixes[p] for p in self.code if history.fixes[p]}
+        reasons = [f"`{p}`: {n} hata düzeltmesi, {history.churn[p]} commit"
+                   for p, n in sorted(fixes.items(), key=lambda x: -x[1])[:4]]  # fmt: skip
+        known = len(history.commits)
+        confidence = "high" if known >= 50 else "low" if known < 10 else "medium"
+        if confidence != "high":
+            reasons.append(f"Geçmiş kısa ({known} commit); bu sinyal zayıf")
+        worst = max(fixes.values(), default=0)
+        return self._signal("history", worst / 5, confidence, reasons,
+                            "Değişen dosyalarda geçmiş hata düzeltmesi yok")  # fmt: skip
+
+    def tests(self) -> Signal:
+        """Changed code that no test covers."""
+        functions = self.change.functions
+        untested = [p for p in self.code if not self.change.graph.tested(p)]
+        reasons = []
+        if untested:
+            reasons.append(f"Testi olmayan değişen dosya: {_few(untested)}")
+        if self.code and not self.tests_changed:
+            # Shown, but not scored: on 10 real repositories, commits that changed no test
+            # needed a later fix less often than those that did (AUC 0.36-0.45), because
+            # touching tests marks a change of behaviour. See docs/measurements.md.
+            reasons.append("Bu PR hiçbir test dosyasını değiştirmiyor")
+        no_test = [f for f in functions if not f.tests and f.callers]
+        if no_test:
+            reasons.append(
+                "Kullanılan ama hiçbir testin çağırmadığı değişen fonksiyon: "
+                + ", ".join(f"`{f.function}`" for f in no_test[:4])
+            )
+        called = sorted({t.split(":", 1)[0] for f in functions for t in f.tests})
+        if called:
+            self.checklist.append(
+                f"Değişen fonksiyonları çağıran testleri çalıştır: {_few(called)}"
+            )
+        for path in untested[:5]:
+            self.checklist.append(f"`{path}` için test ekle")
+            self.suggestions.append({
+                "title": f"{path} için test yaz",
+                "request": f"{path} dosyasındaki değişen davranış için testler yaz. "
+                "Mevcut test düzenini izle; kodu değiştirme.",
+                "files": [path],
+            })  # fmt: skip
+        value = len(untested) / len(self.code) if self.code else 0.0
+        return self._signal("tests", value, "medium", reasons, "Değişen kod testlerle kapsanıyor")
+
+    def criticality(self) -> Signal:
+        """How many files depend on what changed."""
+        graph = self.change.graph
+        fan = {p: graph.fan_in(p) for p in self.code if graph.fan_in(p)}
+        reasons = [f"`{p}` dosyasını {n} dosya içe aktarıyor"
+                   for p, n in sorted(fan.items(), key=lambda x: -x[1])[:3]]  # fmt: skip
+        return self._signal("criticality", max(fan.values(), default=0) / 8, "high", reasons,
+                            "Değişen dosyalara bağımlı dosya yok")  # fmt: skip
+
+    def complexity(self) -> Signal:
+        """Complexity of the changed Python files as they are now."""
+        hits = []
+        for path in self.code:
+            if not path.endswith(".py"):
+                continue
+            try:
+                source = self.change.read(path)
+            except (OSError, ValueError, KeyError):
+                continue
+            hits += [f for f in python_findings(path, source) if f.rule == "high-complexity"]
+        for f in hits[:2]:
+            self.suggestions.append({
+                "title": f"{f.data.get('function', f.file)} fonksiyonunu sadeleştir",
+                "request": f"{f.file} içindeki {f.data.get('function')} fonksiyonunu davranışı "
+                "değiştirmeden daha küçük, okunur parçalara böl.",
+                "files": [f.file],
+            })  # fmt: skip
+        reasons = [f"`{f.file}` {f.title}" for f in hits[:4]]
+        return self._signal("complexity", len(hits) / 4, "high", reasons,
+                            "Değişen dosyalarda yüksek karmaşıklık yok")  # fmt: skip
+
+    def size(self) -> Signal:
+        lines = self.added + self.removed
+        reason = f"{len(self.change.stats)} dosya, +{self.added} −{self.removed} satır"
+        return self._signal("size", lines / 600, "high", [reason], "")
 
 
 def _few(items: list[str], n: int = 4) -> str:
