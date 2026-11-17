@@ -10,6 +10,7 @@ from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.prompt import Confirm
 from rich.syntax import Syntax
 from rich.table import Table
@@ -46,7 +47,7 @@ def _fail(message: str, as_json: bool = False) -> None:
     if as_json:
         print(json.dumps({"ok": False, "error": message}))
     else:
-        console.print(f"[red]{message}[/]")
+        console.print(f"[red]{escape(message)}[/]")  # messages may hold [brackets]
     raise typer.Exit(1)
 
 
@@ -813,12 +814,19 @@ def serve(
     uvicorn.run(create_app(roots, token=token), host=host, port=port, log_level="warning")
 
 
-if __name__ == "__main__":
-    app()
-
-
 server_app = typer.Typer(help="The hosted version: GitHub App, dashboard and worker.")
 app.add_typer(server_app, name="server")
+
+
+@server_app.callback()
+def _server_ready() -> None:
+    """Fails with an install hint when the server extras are missing."""
+    try:
+        import cryptography  # noqa: F401
+        import fastapi  # noqa: F401
+        import psycopg  # noqa: F401
+    except ImportError:
+        _fail('The hosted version needs extra packages: pip install "tokenwise-coder[server]"')
 
 
 @server_app.command("web")
@@ -859,7 +867,7 @@ def server_doctor() -> None:
     try:
         server = ServerConfig.from_env()
     except (KeyError, ValueError, OSError) as exc:
-        _fail(f"Settings are incomplete: {exc}. See docs/hosting.md.")
+        _fail(f"Settings are incomplete: {str(exc).rstrip('.')}. See docs/hosting.md.")
     checks = run_checks(server)
     table = Table(show_header=False, box=None)
     for c in checks:
@@ -869,3 +877,7 @@ def server_doctor() -> None:
     if not ready(checks):
         raise typer.Exit(1)
     console.print("[green]Hazır.[/] GitHub App'i bir hesaba kurup ilk taramayı bekleyin.")
+
+
+if __name__ == "__main__":
+    app()

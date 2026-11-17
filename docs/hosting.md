@@ -168,6 +168,25 @@ Worker müşteri kodunu (projenin kontrol komutunu) çalıştıran tek parçadı
 - **Güncel olmayan öneri:** Onay verildiğinde öneri, ana dalın o anki haliyle karşılaştırılır. Bu arada dosya değiştiyse düzeltme "Güncel değil" durumuna geçer ve yeni öneri istenir.
 - **Oturumlar:** Bir oturum 24 saat sürer. Üyelik her girişte GitHub'dan yeniden okunur. GitHub organization'ından çıkarılan biri en geç bir gün içinde erişimini kaybeder. "Tüm cihazlarda çıkış yap" seçeneği kişinin bütün oturumlarını kapatır.
 
+## Yedekleme
+
+`docker compose up` komutu `backup` servisini de başlatır. Bu servis her gün bir `pg_dump` alır ve `./backups` klasörüne yazar. Her yedek `pg_restore --list` ile okunabilirliği doğrulandıktan sonra kaydedilir ve 14 günden eski olanlar silinir. Bozuk bir yedek, sağlam olanların yerine geçmez.
+
+- **Hemen bir yedek almak için:** `docker compose run --rm -e BACKUP_EVERY=0 backup`
+- **Makine dışına kopya:** Yedekler aynı diskte durdukça makineyle birlikte kaybolabilir. `./backups` klasörünü her gün başka bir yere kopyalayın (örneğin `rclone sync ./backups remote:tokenwise-backups`).
+- **Geri yükleme:**
+
+  ```bash
+  docker compose stop web worker
+  docker compose exec -T db dropdb -U tokenwise tokenwise
+  docker compose exec -T db createdb -U tokenwise tokenwise
+  docker compose exec -T db pg_restore -U tokenwise -d tokenwise --no-owner < backups/tokenwise-YYYYMMDD-HHMMSS.dump
+  docker compose start web worker
+  ```
+
+  Geri yüklenen veritabanındaki model anahtarları yalnızca aynı `TOKENWISE_SECRET_KEY` ile okunabilir. Bu anahtarı yedeklerden ayrı bir yerde saklayın.
+- **Geri yüklemeyi deneyin:** Ayda bir, bir yedeği boş bir veritabanına geri yükleyip `tokenwise server doctor` komutunu çalıştırın. Hiç denenmemiş bir yedeğe güvenmeyin.
+
 ## İzleme
 
 `TOKENWISE_METRICS_TOKEN` tanımlıysa `GET /metrics` adresi Prometheus formatında şu metrikleri verir (istek `Authorization: Bearer <token>` başlığı taşımalıdır):
