@@ -848,3 +848,24 @@ def server_migrate() -> None:
     with db.connect(server.database_url) as conn:
         db.migrate(conn)
     console.print("[green]Database ready.[/]")
+
+
+@server_app.command("doctor")
+def server_doctor() -> None:
+    """Check a hosted setup: database, secrets, the GitHub App, Docker and the work folder."""
+    from .server.config import ServerConfig
+    from .server.doctor import ready, run_checks
+
+    try:
+        server = ServerConfig.from_env()
+    except (KeyError, ValueError, OSError) as exc:
+        _fail(f"Settings are incomplete: {exc}. See docs/hosting.md.")
+    checks = run_checks(server)
+    table = Table(show_header=False, box=None)
+    for c in checks:
+        mark = "[green]ok[/]" if c.ok else ("[red]HATA[/]" if c.required else "[yellow]uyarı[/]")
+        table.add_row(mark, c.name, c.detail)
+    console.print(table)
+    if not ready(checks):
+        raise typer.Exit(1)
+    console.print("[green]Hazır.[/] GitHub App'i bir hesaba kurup ilk taramayı bekleyin.")

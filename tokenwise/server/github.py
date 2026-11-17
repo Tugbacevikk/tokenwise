@@ -132,6 +132,10 @@ class GitHubApp:
         payload = {"iat": now - 60, "exp": now + 540, "iss": self.config.app_id}
         return jwt.encode(payload, self.config.private_key, algorithm="RS256")
 
+    def app_info(self) -> dict:
+        """The app as GitHub sees it: name, events, permissions, installation count."""
+        return self._json(self.http.get("/app", headers={"Authorization": f"Bearer {self._jwt()}"}))
+
     def token(self, installation_id: int) -> str:
         cached = self._tokens.get(installation_id)
         if cached and cached[1] > time.time() + 120:

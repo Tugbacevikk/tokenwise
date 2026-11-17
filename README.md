@@ -347,7 +347,8 @@ tokenwise scan --tools ruff,bandit,coverage   # dış araçların bulgularını 
   geçmiş ise o commit'ten önceki haliyle kullanılır. Sonraki 20 commit içinde bir hata
   düzeltmesi aynı koda dokunduysa o commit "sorunlu" sayılır. Her sinyalin bu sorunlu
   commit'leri ne kadar iyi ayırdığı AUC ile ölçülür. `psf/requests` deposundaki 200 commit
-  üzerinde risk skorunun AUC'si 0,78 çıktı.
+  üzerinde risk skorunun AUC'si 0,77 çıktı; 10 depoda ortalama 0,68
+  ([docs/measurements.md](docs/measurements.md)).
 - **Fonksiyon düzeyinde etki:** Risk raporu hangi fonksiyonların değiştiğini, onları hangi
   fonksiyonların ve hangi testlerin çağırdığını gösterir. Python dosyaları `ast` ile okunur.
   JS/TS dosyaları için `pip install "tokenwise-coder[impact]"` ile Tree-sitter kurulmalıdır.
@@ -428,7 +429,9 @@ Hata ve öneriler için [Issues](https://github.com/Tugbacevikk/tokenwise/issues
 - [x] Faz 1 araçları: risk kalibrasyonu, kural başına yanlış alarm oranı
 - [x] Faz 2: Docker sandbox, Ruff/Bandit/coverage, fonksiyon düzeyinde etki
 - [x] Faz 3: barındırılan sürüm (GitHub App, PostgreSQL, kuyruk, panel)
-- [ ] Faz 1 ölçümü: 10 gerçek depo (şu an 1)
+- [x] Faz 1 ölçümü: 10 gerçek depo ([docs/measurements.md](docs/measurements.md))
+- [x] Faz 4: beta hazırlığı (gürültü azaltma, services katmanı, `tokenwise server doctor`)
+- [ ] Canlı GitHub App denemesi ve ilk beta kullanıcıları
 
 ## Lisans
 

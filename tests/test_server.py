@@ -496,3 +496,36 @@ def test_handle_event_ignores_closed_prs_and_edits_without_new_base(conn):
     open_pr = {**base, "action": "opened"}
     open_pr["pull_request"] = {**base["pull_request"], "state": "open"}
     assert "job" in handle_event(conn, "pull_request", open_pr)
+
+
+class FakeApp:
+    def __init__(self, info=None, error=None):
+        self.info, self.error = info, error
+
+    def app_info(self):
+        if self.error:
+            raise self.error
+        return self.info
+
+
+def test_doctor_reports_each_part(conn, server):
+    from tokenwise.server.doctor import check_github_app, ready, run_checks
+
+    good = {"name": "Tokenwise", "installations_count": 2, "events": ["push", "pull_request"],
+            "permissions": {"contents": "write", "pull_requests": "write", "issues": "write"}}  # fmt: skip
+    server.github = {"app_id": "1", "private_key": "pem", "webhook_secret": "w" * 20,
+                     "client_id": "c", "client_secret": "s"}  # fmt: skip
+    checks = {c.name: c for c in run_checks(server, FakeApp(good))}
+    assert checks["PostgreSQL"].ok and "tablolar hazır" in checks["PostgreSQL"].detail
+    assert checks["GitHub App"].ok and "2 kurulum" in checks["GitHub App"].detail
+    assert checks["TOKENWISE_SECRET_KEY"].ok and checks["TOKENWISE_PUBLIC_URL"].ok
+    if DOCKER_IMAGE:
+        assert checks["Docker"].ok and checks["Sandbox imajı"].ok
+        assert checks["Çalışma klasörü"].ok, checks["Çalışma klasörü"].detail
+        assert ready(list(checks.values()))
+    weak = {**good, "events": ["push"], "permissions": {"contents": "read"}}
+    bad = check_github_app(server, FakeApp(weak))
+    assert not bad.ok and "pull_request" in bad.detail and "contents" in bad.detail
+    assert not check_github_app(server, FakeApp(error=RuntimeError("401"))).ok
+    server.github = {}
+    assert "eksik" in check_github_app(server).detail

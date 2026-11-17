@@ -68,12 +68,60 @@ tokenwise.example.com {
 
 `web` açılışta tabloları kendisi oluşturur. Elle yapmak için `tokenwise server migrate` kullanılabilir.
 
+Kurulumu kontrol etmek için:
+
+```bash
+docker compose exec worker tokenwise server doctor
+```
+
+Komut sırasıyla şunları dener: veritabanı bağlantısı ve tablolar, gizli değerler, GitHub App (anahtarla imzalanmış bir istek gönderip olay aboneliklerini ve izinleri okur), Docker, kontrol imajı ve çalışma klasörünün konteynerden görünüp görünmediği. Bir adım başarısız olursa ne yapılması gerektiğini de yazar.
+
 ## 3. İlk kullanım
 
 1. GitHub App sayfasından **Install** deyin ve bir hesap ya da organization seçin. Kuran kişi Tokenwise'ta o organization'ın **sahibi** olur. Kişisel hesap, tek üyeli bir organization sayılır.
 2. Worker depoları ve varsayılan dallarını okur, her birini bir kez tarar.
 3. `https://tokenwise.example.com` adresinden **GitHub ile giriş yap** deyin. Aynı kuruluma erişimi olan diğer kişiler giriş yaptığında **üye** olarak eklenir.
 4. Düzeltme isteyebilmek için sahip, **Model ayarları** bölümünden bir model anahtarı girer. Tarama ve risk raporu model çağırmaz, bu yüzden anahtar gerektirmez.
+
+## Canlı deneme (beta'dan önce, kendi bilgisayarında)
+
+Sunucu kiralamadan önce bütün akışı kendi makinende, geçici bir HTTPS tüneliyle deneyebilirsin. Windows'ta bunu WSL 2 içinde, Docker Desktop'ın WSL entegrasyonu açıkken yap.
+
+1. **Tünel aç:** `cloudflared tunnel --url http://localhost:8000` komutunu çalıştır. Çıktıdaki `https://….trycloudflare.com` adresini not et. Tünel her açılışta yeni bir adres verir; adres değişirse 2. ve 3. adımları tekrarla.
+2. **GitHub App oluştur:** 1. bölümdeki ayarlarla bir "Tokenwise Deneme" App'i oluştur. Callback ve webhook adreslerine tünel adresini yaz.
+3. **Ayarları gir:** `.env.server` dosyasında `TOKENWISE_PUBLIC_URL` olarak tünel adresini yaz. Sonra `docker compose up -d --build` ve `docker compose exec worker tokenwise server doctor` komutlarını çalıştır. Bütün satırlar `ok` olmalı.
+4. **Deneme deposu oluştur:** Kendi hesabında boş, özel bir depo aç ve içine `app.py` adlı bir dosya ekle:
+
+   ```python
+   import subprocess
+
+
+   def run(cmd):
+       return subprocess.call(cmd, shell=True)
+   ```
+
+   Aynı depoya şu içerikte bir `tokenwise.toml` ekle:
+
+   ```toml
+   [tokenwise]
+   check = "{python} -c 'import app'"
+   ```
+
+5. App'i yalnızca bu depoya kur ve aşağıdaki tabloyu sırayla dene:
+
+| # | Ne yapılır | Beklenen sonuç |
+| --- | --- | --- |
+| 1 | App'i kur | Birkaç saniye içinde panelde depo görünür; sağlık skoru ve "subprocess.call kabukla komut çalıştırıyor" bulgusu çıkar |
+| 2 | Panelde **GitHub ile giriş yap** | Sol üstte kullanıcı adın ve "Sahip" yazar |
+| 3 | `main`'e bir commit push et | Kısa süre sonra **Şimdi tara** gerekmeden yeni tarama gelir; sağlık grafiğine bir çubuk eklenir |
+| 4 | Bir dal aç, değişiklik yap, **taslak** PR aç | PR'a "ReleaseGuard risk raporu" yorumu gelir |
+| 5 | Aynı dala bir commit daha push et | Yeni yorum açılmaz; mevcut yorumun commit kısmı güncellenir |
+| 6 | **Model ayarları** bölümüne Anthropic anahtarını gir, bulguda **AI ile düzelt** de | "Düzeltmeler" sekmesinde öneri ve diff görünür; kontrol "geçti" yazar |
+| 7 | **Onayla ve taslak PR aç** | GitHub'da `tokenwise/fix-1` dalından taslak PR açılır; `main` değişmez |
+| 8 | Bir bulguyu **Yok say**, sonra **Şimdi tara** | Bulgu "Yok sayılan" listesinde kalır, geri açılmaz |
+| 9 | App'i depodan kaldır | Panelde organization kaybolur; `docker compose exec db psql -U tokenwise -c "select count(*) from repositories"` komutu 0 döner |
+
+Bir adım beklendiği gibi çalışmazsa `docker compose logs worker --tail 50` çıktısını kaydet.
 
 ## Güvenlik notları
 
