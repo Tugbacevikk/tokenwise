@@ -7,6 +7,7 @@ from __future__ import annotations
 import ast
 import re
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
@@ -178,8 +179,15 @@ def _resolve_js(path: str, spec: str, files: set[str]) -> str | None:
     return next((c for c in candidates if c in files), None)
 
 
-def build_graph(settings: Settings, files: list[str] | None = None) -> Graph:
+def build_graph(
+    settings: Settings,
+    files: list[str] | None = None,
+    read: Callable[[str], str] | None = None,
+) -> Graph:
+    """The import graph of `files` (default: the project's source files). `read` returns a
+    file's text; by default it is read from disk, the calibration reads it from a git commit."""
     files = files if files is not None else list_source_files(settings)
+    read = read or (lambda path: read_source(settings.root / path))
     graph = Graph(files=files)
     file_set = set(files)
     modules: dict[str, str] = {}
@@ -190,8 +198,8 @@ def build_graph(settings: Settings, files: list[str] | None = None) -> Graph:
 
     for path in files:
         try:
-            source = read_source(settings.root / path)
-        except (OSError, ValueError):
+            source = read(path)
+        except (OSError, ValueError, KeyError):
             continue
         if path.endswith(".py"):
             for name in _python_imports(path, source):

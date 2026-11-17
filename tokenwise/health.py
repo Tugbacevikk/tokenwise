@@ -207,6 +207,23 @@ class HealthStore:
         self.db.commit()
         return self.get(finding_id)
 
+    def rule_stats(self) -> list[dict]:
+        """Per rule: how its findings ended. A finding a person ignored counts as a false alarm,
+        one that went away from the code as a true one; open findings are not judged yet."""
+        rows = self.db.execute(
+            "SELECT rule, category, COUNT(*) AS total,"
+            " SUM(status = 'open') AS open, SUM(status = 'resolved') AS resolved,"
+            " SUM(status = 'ignored') AS ignored, SUM(reopened) AS reopened"
+            " FROM findings GROUP BY rule, category ORDER BY total DESC, rule"
+        ).fetchall()
+        result = []
+        for r in rows:
+            item = dict(r)
+            judged = item["resolved"] + item["ignored"]
+            item["false_alarm_rate"] = round(item["ignored"] / judged, 3) if judged else None
+            result.append(item)
+        return result
+
     def snapshots(self, limit: int = 30) -> list[dict]:
         rows = self.db.execute(
             "SELECT s.*, c.commit_sha FROM snapshots s JOIN scans c ON c.id = s.scan_id"

@@ -560,6 +560,9 @@ def findings(
     ignore: int = typer.Option(0, "--ignore", help="Mark this finding as ignored."),
     reopen: int = typer.Option(0, "--reopen", help="Open an ignored finding again."),
     limit: int = typer.Option(30, "--limit", "-n"),
+    stats: bool = typer.Option(
+        False, "--stats", help="Per rule: findings resolved vs ignored (false alarm rate)."
+    ),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
     """RepoDoctor: list findings by priority (severity x how often the file changes and breaks)."""
@@ -569,6 +572,28 @@ def findings(
     settings = load_settings(root)
     if report_md:
         print(weekly_report(settings, days=days), end="")
+        return
+    if stats:
+        with HealthStore(health_path(settings)) as store:
+            rules = store.rule_stats()
+        if as_json:
+            print(json.dumps(rules, ensure_ascii=False))
+            return
+        if not rules:
+            console.print("No findings yet. Run: tokenwise scan")
+            return
+        table = Table(title="Findings per rule")
+        for column in ("Rule", "Category", "Total", "Open", "Resolved", "Ignored", "Reopened",
+                       "False alarms"):  # fmt: skip
+            table.add_column(column, justify="left" if column in ("Rule", "Category") else "right")
+        for r in rules:
+            rate = r["false_alarm_rate"]
+            table.add_row(r["rule"], r["category"], str(r["total"]), str(r["open"]),
+                          str(r["resolved"]), str(r["ignored"]), str(r["reopened"]),
+                          "-" if rate is None else f"{rate:.0%}")  # fmt: skip
+        console.print(table)
+        console.print("[dim]False alarms = ignored / (ignored + resolved). Open ones are not "
+                      "counted until a person or a scan decides.[/]")  # fmt: skip
         return
     with HealthStore(health_path(settings)) as store:
         for finding_id, new_status in ((ignore, "ignored"), (reopen, "open")):
@@ -673,6 +698,68 @@ def risk(
             console.print(f'[dim]Agent:[/] tokenwise ask "{s["request"]}"')
     if fail_above and report.score > fail_above:
         raise typer.Exit(1)
+
+
+@app.command()
+def calibrate(
+    root: Path = RootOption,
+    sample: int = typer.Option(200, "--sample", help="How many past commits to score."),
+    window: int = typer.Option(
+        20, "--window", help="A fix within this many later commits marks a commit as a regression."
+    ),
+    save: bool = typer.Option(False, "--save", help="Use the suggested weights for this project."),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    """ReleaseGuard: replay past commits as PRs and measure how well each risk signal predicted
+    the ones that needed a fix later (AUC). Reads git only; no model is called."""
+    from .calibrate import CalibrationError, save_weights
+    from .calibrate import calibrate as run_calibration
+    from .release import LABELS, WEIGHTS, load_weights
+
+    settings = load_settings(root)
+    try:
+        if as_json:
+            result = run_calibration(settings, sample=sample, window=window)
+        else:
+            with console.status("Replaying history..."):
+                result = run_calibration(settings, sample=sample, window=window)
+        path = save_weights(settings, result) if save else None
+    except CalibrationError as exc:
+        _fail(str(exc), as_json)
+    if as_json:
+        print(json.dumps(result.to_dict(), ensure_ascii=False))
+        return
+    console.print(
+        f"{len(result.samples)} commits scored · {result.positives} needed a fix within "
+        f"{result.window} commits · {result.commits} commits read · {result.seconds}s"
+    )
+    current = load_weights(settings) if not save else WEIGHTS
+    table = Table()
+    for column in ("Signal", "AUC", "Weight now", "Suggested"):
+        table.add_column(column, justify="left" if column == "Signal" else "right")
+    for name in WEIGHTS:
+        value = result.auc.get(name)
+        suggested = result.suggested.get(name)
+        table.add_row(
+            LABELS[name],
+            "-" if value is None else f"{value:.2f}",
+            f"{current[name]:.2f}",
+            "-" if suggested is None else f"{suggested:.2f}",
+        )
+    score_auc = result.auc.get("score")
+    table.add_row("[bold]Risk score[/]", "-" if score_auc is None else f"{score_auc:.2f}", "", "")
+    console.print(table)
+    if not result.suggested:
+        console.print(
+            "[yellow]No weights suggested:[/] fewer than 10 regressions or no signal beat 0.5."
+        )
+    elif result.suggested_auc is not None:
+        console.print(f"With the suggested weights the score's AUC is {result.suggested_auc:.2f}"
+                      " (measured on the same commits, so optimistic).")  # fmt: skip
+    if path:
+        console.print(f"[green]Saved[/] to {path}; `tokenwise risk` now uses these weights.")
+    elif result.suggested:
+        console.print("Use them for this project with: tokenwise calibrate --save")
 
 
 @app.command()

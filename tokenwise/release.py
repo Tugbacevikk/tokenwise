@@ -6,13 +6,15 @@ The weights are a starting guess to be calibrated against real regressions, not 
 
 from __future__ import annotations
 
+import json
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from .analyzers import python_findings
 from .config import Settings
-from .graph import build_graph
-from .history import git, load_history
+from .graph import Graph, build_graph
+from .history import Commit, History, git, load_history
 from .repo_map import is_test_file, list_source_files
 from .textio import read_source
 
@@ -34,8 +36,41 @@ LABELS = {
 }
 
 
+WEIGHTS_FILE = "risk-weights.json"
+
+
 class GuardError(Exception):
     pass
+
+
+def weights_path(settings: Settings) -> Path:
+    return settings.state_dir / WEIGHTS_FILE
+
+
+def load_weights(settings: Settings) -> dict[str, float]:
+    """The project's calibrated weights (`tokenwise calibrate --save`), else the defaults."""
+    path = weights_path(settings)
+    try:
+        saved = json.loads(path.read_text("utf-8")).get("weights", {})
+    except (OSError, ValueError, AttributeError):
+        return dict(WEIGHTS)
+    weights = {k: float(saved[k]) for k in WEIGHTS if isinstance(saved.get(k), (int, float))}
+    if set(weights) != set(WEIGHTS) or not 0.99 <= sum(weights.values()) <= 1.01:
+        return dict(WEIGHTS)
+    return weights
+
+
+@dataclass
+class ChangeInput:
+    """Everything the six signals need, whether the change is a working tree or a past commit.
+    `history` is what git knew before the change; `graph` and `read` show the code after it."""
+
+    stats: dict[str, tuple[int, int]]  # path -> (added, removed) lines
+    sources: set[str]
+    graph: Graph
+    history: History
+    read: Callable[[str], str]
+    commits: list[Commit] = field(default_factory=list)  # the change's own commits
 
 
 @dataclass
@@ -129,17 +164,27 @@ def _diff_numstat(root: Path, base: str) -> dict[str, tuple[int, int]]:
 def assess(settings: Settings, base: str = "") -> RiskReport:
     root = settings.root
     merge_base = resolve_base(root, base)
-    stats = _diff_numstat(root, merge_base)
-    sources = set(list_source_files(settings))
+    change = ChangeInput(
+        stats=_diff_numstat(root, merge_base),
+        sources=set(list_source_files(settings)),
+        graph=build_graph(settings),
+        history=load_history(root, revision=merge_base),
+        read=lambda path: read_source(root / path, strict=False),
+        commits=load_history(root, revision=f"{merge_base}..HEAD").commits,
+    )
+    return score_change(change, merge_base[:12], load_weights(settings), settings.check)
+
+
+def score_change(
+    change: ChangeInput, base: str, weights: dict[str, float], check: str = ""
+) -> RiskReport:
+    stats, sources, graph, history = change.stats, change.sources, change.graph, change.history
     changed = sorted(p for p in stats if p in sources)
     tests_changed = [p for p in changed if is_test_file(p)]
     code_changed = [p for p in changed if not is_test_file(p)]
     added = sum(a for a, _ in stats.values())
     removed = sum(r for _, r in stats.values())
 
-    graph = build_graph(settings)
-    history = load_history(root, revision=merge_base)
-    range_log = load_history(root, revision=f"{merge_base}..HEAD")
     # tests that import the change are coverage, not impact
     affected = {f: d for f, d in graph.affected(code_changed).items() if not is_test_file(f)}
     co_changed = [c for c in history.co_changed(changed, min_count=3) if c[0] in sources][:8]
@@ -164,7 +209,7 @@ def assess(settings: Settings, base: str = "") -> RiskReport:
         for other, mine, count in co_changed[:3]:
             checklist.append(f"`{other}` dosyasını kontrol et: {count} kez `{mine}` ile değişti")
     impact = min(1.0, (len(direct) + 0.5 * len(indirect) + len(co_changed)) / 10)
-    signals.append(Signal("impact", impact, WEIGHTS["impact"], "high", reasons or ["Etki yok"]))
+    signals.append(Signal("impact", impact, weights["impact"], "high", reasons or ["Etki yok"]))
 
     # 2. history: were these files fixed often?
     fixes = {p: history.fixes[p] for p in code_changed if history.fixes[p]}
@@ -172,19 +217,18 @@ def assess(settings: Settings, base: str = "") -> RiskReport:
     worst = max(fixes.values(), default=0)
     reasons = [f"`{p}`: {n} hata düzeltmesi, {churn.get(p, 0)} commit" for p, n in
                sorted(fixes.items(), key=lambda x: -x[1])[:4]]  # fmt: skip
-    confidence = (
-        "high" if len(history.commits) >= 50 else "low" if len(history.commits) < 10 else "medium"
-    )
+    known = len(history.commits)
+    confidence = "high" if known >= 50 else "low" if known < 10 else "medium"
     if confidence != "high":
-        reasons.append(f"Geçmiş kısa ({len(history.commits)} commit); bu sinyal zayıf")
+        reasons.append(f"Geçmiş kısa ({known} commit); bu sinyal zayıf")
     signals.append(
-        Signal("history", min(1.0, worst / 5), WEIGHTS["history"], confidence,
+        Signal("history", min(1.0, worst / 5), weights["history"], confidence,
                reasons or ["Değişen dosyalarda geçmiş hata düzeltmesi yok"])
     )  # fmt: skip
 
     # 3. tests: changed code with no test, and no test touched by this PR
     untested = [p for p in code_changed if not graph.tested(p)]
-    touched_tests = {t for t in tests_changed}
+    touched_tests = set(tests_changed)
     covered_now = [
         p for p in code_changed if any(t in graph.rdeps.get(p, ()) for t in touched_tests)
     ]
@@ -197,7 +241,7 @@ def assess(settings: Settings, base: str = "") -> RiskReport:
     test_value = 0.0
     if code_changed:
         test_value = 0.6 * len(untested) / len(code_changed) + 0.4 * len(gaps) / len(code_changed)
-    signals.append(Signal("tests", min(1.0, test_value), WEIGHTS["tests"], "medium",
+    signals.append(Signal("tests", min(1.0, test_value), weights["tests"], "medium",
                           reasons or ["Değişen kod testlerle kapsanıyor"]))  # fmt: skip
     for path in untested[:5]:
         checklist.append(f"`{path}` için test ekle")
@@ -215,7 +259,7 @@ def assess(settings: Settings, base: str = "") -> RiskReport:
     top_fan = max(fan.values(), default=0)
     reasons = [f"`{p}` dosyasını {n} dosya içe aktarıyor" for p, n in
                sorted(fan.items(), key=lambda x: -x[1])[:3]]  # fmt: skip
-    signals.append(Signal("criticality", min(1.0, top_fan / 8), WEIGHTS["criticality"], "high",
+    signals.append(Signal("criticality", min(1.0, top_fan / 8), weights["criticality"], "high",
                           reasons or ["Değişen dosyalara bağımlı dosya yok"]))  # fmt: skip
 
     # 5. complexity of the changed Python files as they are now
@@ -224,14 +268,14 @@ def assess(settings: Settings, base: str = "") -> RiskReport:
         if not path.endswith(".py"):
             continue
         try:
-            source = read_source(root / path, strict=False)
-        except OSError:
+            source = change.read(path)
+        except (OSError, ValueError, KeyError):
             continue
         complex_hits += [f for f in python_findings(path, source) if f.rule == "high-complexity"]
     reasons = [f"`{f.file}` {f.title}" for f in complex_hits[:4]]
     reasons = reasons or ["Değişen dosyalarda yüksek karmaşıklık yok"]
     value = min(1.0, len(complex_hits) / 4)
-    signals.append(Signal("complexity", value, WEIGHTS["complexity"], "high", reasons))
+    signals.append(Signal("complexity", value, weights["complexity"], "high", reasons))
     for f in complex_hits[:2]:
         suggestions.append(
             {
@@ -244,21 +288,21 @@ def assess(settings: Settings, base: str = "") -> RiskReport:
 
     # 6. size
     size = added + removed
-    signals.append(Signal("size", min(1.0, size / 600), WEIGHTS["size"], "high",
+    signals.append(Signal("size", min(1.0, size / 600), weights["size"], "high",
                           [f"{len(stats)} dosya, +{added} −{removed} satır"]))  # fmt: skip
 
-    if settings.check:
-        checklist.append(f"Proje kontrolünü çalıştır: `{settings.check}`")
+    if check:
+        checklist.append(f"Proje kontrolünü çalıştır: `{check}`")
     if direct:
         checklist.append(f"Etkilenen modülleri gözden geçir: {_few(direct)}")
-    ai_commits = sum(c.ai_assisted for c in range_log.commits)
+    ai_commits = sum(c.ai_assisted for c in change.commits)
     if ai_commits:
         checklist.append(
             f"{ai_commits} commit AI yardımıyla yazılmış: testleri ve kenar durumları elle doğrula"
         )
 
     return RiskReport(
-        base=merge_base[:12],
+        base=base,
         changed=changed,
         tests_changed=tests_changed,
         affected=affected,
@@ -269,7 +313,7 @@ def assess(settings: Settings, base: str = "") -> RiskReport:
         checklist=checklist,
         suggestions=suggestions,
         ai_commits=ai_commits,
-        commits=len(range_log.commits),
+        commits=len(change.commits),
     )
 
 
