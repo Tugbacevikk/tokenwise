@@ -30,6 +30,7 @@ class Definition:
     end: int
     name: str  # qualified: Class.method
     simple: str
+    nested: bool = False  # defined inside another function: a private helper of it
 
 
 @dataclass
@@ -38,6 +39,7 @@ class FunctionImpact:
     function: str
     callers: list[str] = field(default_factory=list)  # "file:function", code only
     tests: list[str] = field(default_factory=list)  # "file:function" in test files
+    nested: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -52,17 +54,18 @@ def _python_definitions(source: str) -> list[Definition]:
     except (SyntaxError, ValueError):
         return []
     found = []
-    stack: list[tuple[str, ast.AST]] = [("", tree)]
+    stack: list[tuple[str, ast.AST, bool]] = [("", tree, False)]
     while stack:
-        prefix, parent = stack.pop()
+        prefix, parent, in_function = stack.pop()
         for node in ast.iter_child_nodes(parent):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 name = prefix + node.name
                 start = min([node.lineno] + [d.lineno for d in node.decorator_list])
-                found.append(Definition(start, node.end_lineno or node.lineno, name, node.name))
-                stack.append((name + ".", node))
+                found.append(Definition(start, node.end_lineno or node.lineno, name, node.name,
+                                        in_function))  # fmt: skip
+                stack.append((name + ".", node, True))
             elif isinstance(node, ast.ClassDef):
-                stack.append((prefix + node.name + ".", node))
+                stack.append((prefix + node.name + ".", node, in_function))
     return found
 
 
@@ -126,14 +129,14 @@ def _js_units(path: str, source: str) -> list[tuple[Definition, object]]:
         return []
     found: list[tuple[Definition, object]] = []
 
-    def visit(node, prefix: str) -> None:
+    def visit(node, prefix: str, in_function: bool = False) -> None:
         for child in node.children:
             kind = child.type
             name_node = child.child_by_field_name("name")
             if kind in ("class_declaration", "class", "abstract_class_declaration") and (
                 name_node is not None
             ):
-                visit(child, prefix + _text(name_node) + ".")
+                visit(child, prefix + _text(name_node) + ".", in_function)
                 continue
             simple, body = "", child
             if kind in ("function_declaration", "generator_function_declaration",
@@ -146,10 +149,11 @@ def _js_units(path: str, source: str) -> list[tuple[Definition, object]]:
             if simple:
                 name = prefix + simple
                 start, end = child.start_point[0] + 1, child.end_point[0] + 1
-                found.append((Definition(start, end, name, simple), body))
-                visit(child, name + ".")
+                found.append((Definition(start, end, name, simple, in_function), body))
+                visit(child, name + ".", True)
             else:
-                visit(child, prefix)
+                # an anonymous function's body is still inside a function
+                visit(child, prefix, in_function or kind in _JS_FUNCTIONS)
 
     visit(tree.root_node, "")
     return found
@@ -303,7 +307,7 @@ def function_impact(
                if not (d.simple.startswith("__") and d.simple.endswith("__"))]  # fmt: skip
         if not hit:
             continue
-        by_name = {d.simple: FunctionImpact(path, d.name) for d in hit}
+        by_name = {d.simple: FunctionImpact(path, d.name, nested=d.nested) for d in hit}
         for user in sorted({path, *graph.rdeps.get(path, ())}):
             user_defs, user_calls = parse(user)
             for name, line in user_calls:

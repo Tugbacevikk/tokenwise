@@ -298,7 +298,14 @@ class _Scoring:
             # needed a later fix less often than those that did (AUC 0.36-0.45), because
             # touching tests marks a change of behaviour. See docs/measurements.md.
             reasons.append("Bu PR hiçbir test dosyasını değiştirmiyor")
-        no_test = [f for f in functions if not f.tests and f.callers]
+        graph = self.change.graph
+        # Not reported: helpers nested in another function, and functions whose callers sit
+        # in code the tests reach (tested through their caller).
+        no_test = [
+            f for f in functions
+            if f.callers and not f.tests and not f.nested
+            and not any(graph.tested(c.split(":", 1)[0]) for c in f.callers)
+        ]  # fmt: skip
         if no_test:
             reasons.append(
                 "Kullanılan ama hiçbir testin çağırmadığı değişen fonksiyon: "

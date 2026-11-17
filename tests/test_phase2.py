@@ -301,3 +301,27 @@ def test_js_and_ts_functions_get_complexity_and_length_findings(tmp_path):
                                                build_graph(Settings(root=tmp_path)))}  # fmt: skip
     assert ("high-complexity", "src/a.ts") in rules
     assert not any(file == "src/types.d.ts" for _, file in rules)
+
+
+def test_untested_function_list_skips_nested_helpers_and_caller_tested_code(tmp_path):
+    sh(tmp_path, "init", "-q", "-b", "main")
+    commit(tmp_path, "start", {
+        "pkg/__init__.py": "",
+        "pkg/core.py": "def outer(x):\n    def helper(y):\n        return y\n    return helper(x)\n\n\n"
+                       "def lonely(x):\n    return x\n",
+        "pkg/api.py": "from pkg.core import outer\n\n\ndef handle(x):\n    return outer(x)\n",
+        "pkg/jobs.py": "from pkg.core import lonely\n\n\ndef run():\n    return lonely(1)\n",
+        "tests/test_api.py": "from pkg.api import handle\n\n\ndef test_h():\n"
+                             "    assert handle(1) == 1\n",
+    })  # fmt: skip
+    sh(tmp_path, "checkout", "-q", "-b", "feature")
+    path = tmp_path / "pkg" / "core.py"
+    path.write_text(path.read_text("utf-8").replace("return y", "return y or 0")
+                    .replace("return x\n", "return x or 0\n"), "utf-8")  # fmt: skip
+    defs = {d.name: d.nested for d in definitions("pkg/core.py", path.read_text("utf-8"))}
+    assert defs == {"outer": False, "outer.helper": True, "lonely": False}
+    report = assess(Settings(root=tmp_path), "main")
+    tests_signal = next(s for s in report.signals if s.name == "tests")
+    untested = [r for r in tests_signal.reasons if "hiçbir testin çağırmadığı" in r]
+    # helper is nested in outer; outer's caller api.py is tested; only lonely is left
+    assert untested == ["Kullanılan ama hiçbir testin çağırmadığı değişen fonksiyon: `lonely`"]
