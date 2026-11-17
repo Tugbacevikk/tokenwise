@@ -192,7 +192,7 @@ def outline(path: str, source: str) -> list[str]:
     return outline_js(source)
 
 
-_TEST_DIRS = {"test", "tests", "__tests__", "spec", "specs", "testing"}
+_TEST_DIRS = {"test", "tests", "__tests__", "spec", "specs", "testing", "typing_tests"}
 _TEST_FILE = re.compile(r"(^test_.*|.*_test\.\w+|.*\.(test|spec)\.\w+|.*Tests?\.\w+)$")
 _NAME_ONLY = re.compile(r"\(.*$")
 
@@ -205,6 +205,24 @@ LEVELS = (
     "top-level names",  # no methods; tests left out
     "paths only",  # just the file list, tests left out
 )
+
+
+# Code that ships with a project but is not the product: documentation snippets, examples,
+# maintenance scripts, benchmarks and tool configuration. It needs no tests of its own.
+_SUPPORT_DIRS = {
+    "docs", "doc", "docs_src", "documentation", "examples", "example", "samples", "sample",
+    "demo", "demos", "scripts", "script", "tools", "benchmarks", "benchmark", "bench",
+    ".vitepress", ".storybook", ".github", "sandbox", "playground",
+}  # fmt: skip
+_SUPPORT_FILE = re.compile(
+    r"^(setup\.py|conftest\.py|conf\.py|noxfile\.py|manage\.py|"
+    r".*\.config\.(js|cjs|mjs|ts)|\..*rc\.(js|cjs)|[gG]ulpfile\.\w+|Gruntfile\.\w+|.*\.d\.ts)$"
+)
+
+
+def is_support_file(rel: str) -> bool:
+    parts = rel.split("/")
+    return any(p in _SUPPORT_DIRS for p in parts[:-1]) or bool(_SUPPORT_FILE.match(parts[-1]))
 
 
 def is_test_file(rel: str) -> bool:

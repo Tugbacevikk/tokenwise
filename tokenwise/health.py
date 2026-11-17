@@ -291,10 +291,11 @@ def ranked(findings: list[dict], history: History) -> list[dict]:
 def collect(settings: Settings, graph: Graph, tools: tuple[str, ...] | None = None):
     """Built-in findings plus those of the configured external tools. A coverage report, when
     there is one, is better evidence than imports: a file it covers well is not "missing tests"."""
-    from .external import LOW_COVERAGE, run_tools
+    from .external import LOW_COVERAGE, drop_twins, run_tools
 
     found = analyze(settings, graph)
     run = run_tools(settings, graph.files, settings.scan_tools if tools is None else tools)
+    found = drop_twins(found, run.findings)
     if run.coverage:
         found = [
             f for f in found

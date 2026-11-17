@@ -111,10 +111,16 @@ def test_real_container_is_stopped_on_timeout(tmp_path):
 @pytest.mark.skipif(shutil.which("ruff") is None, reason="ruff not installed")
 def test_ruff_groups_hits_per_file_and_rule(tmp_path):
     (tmp_path / "a.py").write_text("import os\nimport sys\nx = undefined_name\n", "utf-8")
-    found = ruff_findings(Settings(root=tmp_path), {"a.py"})
-    by_rule = {f.rule: f for f in found}
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "conf.py").write_text("y = also_undefined\n", "utf-8")
+    files = {"a.py", "docs/conf.py"}
+    # no Ruff config of its own: only bug rules, not style it never chose
+    by_rule = {f.rule: f for f in ruff_findings(Settings(root=tmp_path), files)}
+    assert set(by_rule) == {"ruff:F821"} and by_rule["ruff:F821"].severity == "high"
+    assert by_rule["ruff:F821"].file == "a.py"  # docs are not the product
+    (tmp_path / "ruff.toml").write_text('[lint]\nselect = ["F"]\n', "utf-8")
+    by_rule = {f.rule: f for f in ruff_findings(Settings(root=tmp_path), files)}
     assert by_rule["ruff:F401"].data["count"] == 2 and "2 yerde" in by_rule["ruff:F401"].title
-    assert by_rule["ruff:F821"].severity == "high"
 
 
 @pytest.mark.skipif(shutil.which("bandit") is None, reason="bandit not installed")
@@ -125,6 +131,7 @@ def test_bandit_names_the_function_not_the_line(tmp_path):
     found = bandit_findings(Settings(root=tmp_path), {"a.py"})
     hit = next(f for f in found if f.rule == "bandit:B602")
     assert hit.category == "security" and hit.key == "B602@run" and hit.severity == "high"
+    assert "bandit:B404" not in {f.rule for f in found}  # low severity: left out
 
 
 def test_coverage_json_and_xml_are_read(tmp_path):

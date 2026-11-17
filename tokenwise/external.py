@@ -20,7 +20,7 @@ from pathlib import Path
 
 from .analyzers import Finding
 from .config import Settings
-from .repo_map import is_test_file
+from .repo_map import is_support_file, is_test_file
 from .textio import read_source
 
 TOOLS = ("ruff", "bandit", "coverage")
@@ -30,6 +30,20 @@ VERY_LOW_COVERAGE = 0.2
 MIN_STATEMENTS = 20  # tiny files say little about coverage
 _BANDIT_SEVERITY = {"HIGH": "high", "MEDIUM": "medium", "LOW": "low"}
 _RUFF_SERIOUS = ("E9", "F821", "F822", "F823", "F63", "F7", "PLE")
+# Without a Ruff configuration of its own, a project is held only to rules that point at real
+# bugs: a style rule it never chose is noise, not a finding.
+RUFF_DEFAULT_SELECT = "E9,F63,F7,F82,F811,F841,B006,B008,B023,B904,PLE"
+_RUFF_CONFIGS = ("ruff.toml", ".ruff.toml")
+
+
+def has_ruff_config(root: Path) -> bool:
+    if any((root / name).exists() for name in _RUFF_CONFIGS):
+        return True
+    pyproject = root / "pyproject.toml"
+    try:
+        return "[tool.ruff" in pyproject.read_text("utf-8")
+    except OSError:
+        return False
 
 
 @dataclass
@@ -102,8 +116,10 @@ def ruff_findings(settings: Settings, files: set[str]) -> list[Finding] | None:
     command = _command("ruff")
     if command is None:
         return None
-    done = _run([*command, "check", "--output-format", "json", "--exit-zero", "--no-cache",
-                 "--quiet", "."], settings.root)  # fmt: skip
+    args = [*command, "check", "--output-format", "json", "--exit-zero", "--no-cache", "--quiet"]
+    if not has_ruff_config(settings.root):
+        args += ["--isolated", "--select", RUFF_DEFAULT_SELECT]
+    done = _run([*args, "."], settings.root)
     if done is None:
         return None
     try:
@@ -114,7 +130,8 @@ def ruff_findings(settings: Settings, files: set[str]) -> list[Finding] | None:
     for item in items:
         path = _rel(settings.root, item.get("filename", ""))
         code = item.get("code") or "syntax"
-        if path in files:
+        # tests break rules on purpose (an undefined name to provoke an error)
+        if path in files and not is_support_file(path) and not is_test_file(path):
             grouped[(path, code)].append(item)
     found = []
     for (path, code), hits in sorted(grouped.items()):
@@ -145,10 +162,13 @@ def bandit_findings(settings: Settings, files: set[str]) -> list[Finding] | None
     command = _command("bandit")
     if command is None:
         return None
-    targets = sorted(f for f in files if f.endswith(".py") and not is_test_file(f))
+    targets = sorted(f for f in files if f.endswith(".py") and not is_test_file(f)
+                     and not is_support_file(f))  # fmt: skip
     if not targets:
         return []
-    done = _run([*command, "-f", "json", "-q", *targets], settings.root)
+    # medium severity and confidence and up: the low ones (assert, importing subprocess, a
+    # "password" string, a guessed shell=True) are what makes people switch Bandit off
+    done = _run([*command, "-f", "json", "-q", "-ll", "-ii", *targets], settings.root)
     if done is None:
         return None
     try:
@@ -244,6 +264,21 @@ def coverage_findings(coverage: dict[str, float], files: set[str]) -> list[Findi
             )
         )
     return found
+
+
+# Built-in security rules that Bandit also reports: when Bandit runs, its finding on the same
+# line is the one kept, so one problem is not counted twice.
+_BANDIT_TWINS = {"dynamic-code": ("B102", "B307"), "shell-command": ("B602", "B604", "B605"),
+                 "unsafe-deserialize": ("B301",), "unsafe-yaml": ("B506",)}  # fmt: skip
+
+
+def drop_twins(found: list[Finding], extra: list[Finding]) -> list[Finding]:
+    bandit = {(f.file, f.line, f.rule.split(":", 1)[1]) for f in extra
+              if f.rule.startswith("bandit:")}  # fmt: skip
+    return [
+        f for f in found
+        if not any((f.file, f.line, code) in bandit for code in _BANDIT_TWINS.get(f.rule, ()))
+    ]  # fmt: skip
 
 
 def run_tools(settings: Settings, files: list[str], tools: tuple[str, ...]) -> ToolRun:

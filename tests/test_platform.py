@@ -97,6 +97,67 @@ def test_graph_reads_python_and_js_imports(repo):
     assert graph.tested("pkg/api.py") and not graph.tested("pkg/jobs.py")
 
 
+def test_support_code_needs_no_tests():
+    from tokenwise.repo_map import is_support_file
+
+    for path in ("docs_src/app/main.py", "examples/a.py", "scripts/release.py", "conf.py",
+                 "eslint.config.js", "docs/.vitepress/theme/index.ts", ".eslintrc.cjs"):  # fmt: skip
+        assert is_support_file(path), path
+    for path in ("src/app/docs.py", "lib/axios.js", "tokenwise/tools.py"):
+        assert not is_support_file(path), path
+
+
+def test_graph_resolves_a_require_of_the_package_root(tmp_path):
+    (tmp_path / "test").mkdir()
+    (tmp_path / "index.js").write_text("module.exports = 1\n", "utf-8")
+    (tmp_path / "test" / "app.js").write_text("const app = require('..')\n", "utf-8")
+    (tmp_path / "test" / "deep.js").write_text("const x = require('../..')\n", "utf-8")
+    graph = build_graph(Settings(root=tmp_path))
+    assert graph.deps == {"test/app.js": {"index.js"}}
+
+
+def test_tests_reach_files_through_package_entries_and_one_module(tmp_path):
+    files = {
+        "lib/__init__.py": "from lib._api import get\n",
+        "lib/_api.py": "from lib._client import Client\n\ndef get():\n    return Client()\n",
+        "lib/_client.py": "from lib._pool import Pool\n\nclass Client:\n    pass\n",
+        "lib/_pool.py": "class Pool:\n    pass\n",
+        "lib/consts.py": "LIMIT = 3\n",
+        "tests/test_lib.py": "import lib\n",
+    }
+    for name, text in files.items():
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text(text, "utf-8")
+    graph = build_graph(Settings(root=tmp_path))
+    assert graph.tested("lib/_api.py")  # through __init__.py
+    assert graph.tested("lib/_client.py")  # __init__ -> _api (one module) -> _client
+    assert not graph.tested("lib/_pool.py")  # two ordinary modules away
+    from tokenwise.analyzers import analyze
+
+    missing = {f.file for f in analyze(Settings(root=tmp_path), graph) if f.rule == "missing-tests"}
+    assert missing == {"lib/_pool.py"}  # consts.py has no behaviour to test
+
+
+def test_cycles_count_only_load_time_imports_and_not_the_stdlib(tmp_path):
+    files = {
+        "pkg/__init__.py": "from pkg.a import A\n",
+        "pkg/a.py": "import json\nfrom typing import TYPE_CHECKING\nif TYPE_CHECKING:\n"
+        "    from pkg.b import B\n\nclass A:\n    pass\n",
+        "pkg/b.py": "from pkg.a import A\n\ndef late():\n    from pkg import c\n",
+        "pkg/c.py": "from pkg import b\nif __name__ == '__main__':\n    from pkg.d import x\n",
+        "pkg/d.py": "from pkg.c import b\nx = 1\n",
+        "pkg/json/__init__.py": "import json\n",
+    }
+    for name, text in files.items():
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text(text, "utf-8")
+    graph = build_graph(Settings(root=tmp_path))
+    assert graph.cycles() == []  # every loop above is broken at load time
+    assert "pkg/b.py" in graph.deps["pkg/a.py"]  # still a dependency for impact
+    assert "pkg/json/__init__.py" not in graph.deps.get("pkg/a.py", set())  # stdlib json
+    assert "pkg/a.py" in graph.deps["pkg/__init__.py"]
+
+
 def test_graph_finds_import_cycles(tmp_path):
     (tmp_path / "a.py").write_text("import b\n")
     (tmp_path / "b.py").write_text("import c\n")
@@ -224,12 +285,12 @@ def test_risk_of_a_branch_touching_a_hotspot(repo):
     assert set(report.affected) == {"pkg/api.py", "pkg/jobs.py", "pkg/store.py"}
     signals = {s.name: s for s in report.signals}
     assert signals["history"].value > 0  # three fix commits on core.py
-    assert signals["tests"].value > 0  # core.py is changed and no test changed
+    assert signals["tests"].value == 0  # test_api reaches core.py through pkg/api.py
+    assert "Bu PR hiçbir test dosyasını değiştirmiyor" in signals["tests"].reasons
     assert signals["criticality"].value > 0
     assert report.ai_commits == 1 and report.commits == 1
     assert 0 < report.score <= 100
     assert any("pkg/core.py" in item for item in report.checklist)
-    assert report.suggestions[0]["files"] == ["pkg/core.py"]
     text = to_markdown(report)
     assert "Risk:" in text and "kontrol listesi" in text and "pkg/jobs.py" in text
 

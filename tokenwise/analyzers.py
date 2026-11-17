@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 
 from .config import Settings
 from .graph import Graph
-from .repo_map import is_test_file
+from .repo_map import is_support_file, is_test_file
 from .textio import read_source
 
 SEVERITIES = ("high", "medium", "low")
@@ -198,7 +198,7 @@ def _enclosing(tree: ast.AST, line: int) -> str:
 def text_findings(path: str, source: str) -> list[Finding]:
     found = []
     lines = source.splitlines()
-    if len(lines) > LARGE_FILE:
+    if len(lines) > LARGE_FILE and not is_test_file(path):
         found.append(
             Finding(
                 "large-file",
@@ -247,9 +247,15 @@ def text_findings(path: str, source: str) -> list[Finding]:
     return found
 
 
-def graph_findings(graph: Graph, complex_files: set[str]) -> list[Finding]:
+def graph_findings(
+    graph: Graph, complex_files: set[str], behaviour: set[str] | None = None
+) -> list[Finding]:
+    """`behaviour`: files that define a function or class. A module of constants or generated
+    tables has nothing to test, so only these can be "missing tests" (None = every file)."""
     found = []
     for group in graph.cycles():
+        if all(is_support_file(f) for f in group):  # an example app's own cycle
+            continue
         found.append(
             Finding(
                 "import-cycle",
@@ -265,7 +271,7 @@ def graph_findings(graph: Graph, complex_files: set[str]) -> list[Finding]:
     for path in graph.files:
         if is_test_file(path) or graph.tested(path):
             continue
-        if path.rsplit("/", 1)[-1] in ("setup.py", "conftest.py", "manage.py"):
+        if is_support_file(path) or (behaviour is not None and path not in behaviour):
             continue
         fan_in = graph.fan_in(path)
         risky = fan_in >= 3 or path in complex_files
@@ -286,16 +292,29 @@ def graph_findings(graph: Graph, complex_files: set[str]) -> list[Finding]:
 
 def analyze(settings: Settings, graph: Graph) -> list[Finding]:
     """Every finding in the project, in file order."""
+    from .repo_map import outline
+
     found: list[Finding] = []
+    behaviour: set[str] = set()
     for path in graph.files:
         try:
             source = read_source(settings.root / path, strict=False)
         except OSError:
             continue
+        if outline(path, source):
+            behaviour.add(path)
+        support = is_support_file(path)
         if path.endswith(".py") and not is_test_file(path):
-            found.extend(python_findings(path, source))
-        found.extend(text_findings(path, source))
+            # documentation snippets and scripts: their security still matters, their style less
+            found.extend(f for f in python_findings(path, source)
+                         if not support or f.category == "security")  # fmt: skip
+        found.extend(
+            f
+            for f in text_findings(path, source)
+            # a large module of data (generated tables) has no responsibilities to split
+            if not (f.rule == "large-file" and (support or path not in behaviour))
+        )
     complex_files = {f.file for f in found if f.rule == "high-complexity"}
-    found.extend(graph_findings(graph, complex_files))
+    found.extend(graph_findings(graph, complex_files, behaviour))
     order = {s: i for i, s in enumerate(SEVERITIES)}
     return sorted(found, key=lambda f: (f.file, order[f.severity], f.line, f.rule))

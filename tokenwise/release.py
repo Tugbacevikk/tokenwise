@@ -239,21 +239,17 @@ def score_change(
                reasons or ["Değişen dosyalarda geçmiş hata düzeltmesi yok"])
     )  # fmt: skip
 
-    # 3. tests: changed code with no test, and no test touched by this PR
+    # 3. tests: changed code that no test covers
     untested = [p for p in code_changed if not graph.tested(p)]
-    touched_tests = set(tests_changed)
-    covered_now = [
-        p for p in code_changed if any(t in graph.rdeps.get(p, ()) for t in touched_tests)
-    ]
-    gaps = [p for p in code_changed if p not in covered_now]
     reasons = []
     if untested:
         reasons.append(f"Testi olmayan değişen dosya: {_few(untested)}")
     if code_changed and not tests_changed:
+        # Shown, but not scored: on 10 real repositories, commits that changed no test needed a
+        # later fix less often than those that did (AUC 0.36-0.45), because touching tests
+        # marks a change of behaviour. See docs/measurements.md.
         reasons.append("Bu PR hiçbir test dosyasını değiştirmiyor")
-    test_value = 0.0
-    if code_changed:
-        test_value = 0.6 * len(untested) / len(code_changed) + 0.4 * len(gaps) / len(code_changed)
+    test_value = len(untested) / len(code_changed) if code_changed else 0.0
     signals.append(Signal("tests", min(1.0, test_value), weights["tests"], "medium",
                           reasons or ["Değişen kod testlerle kapsanıyor"]))  # fmt: skip
     no_test = [f for f in change.functions if not f.tests and f.callers]
