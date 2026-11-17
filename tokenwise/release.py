@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from .analyzers import python_findings
+from .callgraph import FunctionImpact, describe, function_impact
 from .config import Settings
 from .graph import Graph, build_graph
 from .history import Commit, History, git, load_history
@@ -71,6 +72,7 @@ class ChangeInput:
     history: History
     read: Callable[[str], str]
     commits: list[Commit] = field(default_factory=list)  # the change's own commits
+    functions: list[FunctionImpact] = field(default_factory=list)
 
 
 @dataclass
@@ -100,6 +102,7 @@ class RiskReport:
     suggestions: list[dict]  # tasks the agent can take: {"title", "request", "files"}
     ai_commits: int
     commits: int
+    functions: list[dict] = field(default_factory=list)  # changed functions, callers, tests
 
     @property
     def score(self) -> int:
@@ -164,13 +167,22 @@ def _diff_numstat(root: Path, base: str) -> dict[str, tuple[int, int]]:
 def assess(settings: Settings, base: str = "") -> RiskReport:
     root = settings.root
     merge_base = resolve_base(root, base)
+    stats = _diff_numstat(root, merge_base)
+    sources = set(list_source_files(settings))
+    graph = build_graph(settings)
+
+    def read(path: str) -> str:
+        return read_source(root / path, strict=False)
+
+    changed = sorted(p for p in stats if p in sources)
     change = ChangeInput(
-        stats=_diff_numstat(root, merge_base),
-        sources=set(list_source_files(settings)),
-        graph=build_graph(settings),
+        stats=stats,
+        sources=sources,
+        graph=graph,
         history=load_history(root, revision=merge_base),
-        read=lambda path: read_source(root / path, strict=False),
+        read=read,
         commits=load_history(root, revision=f"{merge_base}..HEAD").commits,
+        functions=function_impact(root, graph, merge_base, changed, read),
     )
     return score_change(change, merge_base[:12], load_weights(settings), settings.check)
 
@@ -201,6 +213,7 @@ def score_change(
         reasons.append(f"{len(direct)} dosya doğrudan etkileniyor: {_few(direct)}")
     if indirect:
         reasons.append(f"{len(indirect)} dosya dolaylı etkileniyor: {_few(indirect)}")
+    reasons += describe(change.functions)
     if co_changed:
         reasons.append(
             "Geçmişte birlikte değişen ama bu PR'da olmayan: "
@@ -243,6 +256,16 @@ def score_change(
         test_value = 0.6 * len(untested) / len(code_changed) + 0.4 * len(gaps) / len(code_changed)
     signals.append(Signal("tests", min(1.0, test_value), weights["tests"], "medium",
                           reasons or ["Değişen kod testlerle kapsanıyor"]))  # fmt: skip
+    no_test = [f for f in change.functions if not f.tests and f.callers]
+    if no_test:
+        reasons.append(
+            "Kullanılan ama hiçbir testin çağırmadığı değişen fonksiyon: "
+            + ", ".join(f"`{f.function}`" for f in no_test[:4])
+        )
+    called = [f for f in change.functions if f.tests]
+    if called:
+        tests = sorted({t.split(":", 1)[0] for f in called for t in f.tests})
+        checklist.append(f"Değişen fonksiyonları çağıran testleri çalıştır: {_few(tests)}")
     for path in untested[:5]:
         checklist.append(f"`{path}` için test ekle")
         suggestions.append(
@@ -314,6 +337,7 @@ def score_change(
         suggestions=suggestions,
         ai_commits=ai_commits,
         commits=len(change.commits),
+        functions=[f.to_dict() for f in change.functions],
     )
 
 

@@ -525,18 +525,22 @@ SEVERITY_STYLE = {"high": "red", "medium": "yellow", "low": "dim"}
 @app.command()
 def scan(
     root: Path = RootOption,
+    tools: str = typer.Option(
+        "", "--tools", help="Extra sources, comma separated: ruff, bandit, coverage."
+    ),
     as_json: bool = typer.Option(False, "--json", help="Print the result as JSON."),
 ) -> None:
     """RepoDoctor: analyze the project, track findings over time and score its health."""
     from .health import scan as run_scan
 
     settings = load_settings(root)
+    chosen = tuple(t.strip() for t in tools.split(",") if t.strip()) or None
     if as_json:
-        result = run_scan(settings)
+        result = run_scan(settings, tools=chosen)
         print(json.dumps(result.__dict__))
         return
     with console.status("Scanning..."):
-        result = run_scan(settings)
+        result = run_scan(settings, tools=chosen)
     table = Table(title=f"Health: {result.scores['overall']}/100")
     table.add_column("Category")
     table.add_column("Score", justify="right")
@@ -548,6 +552,10 @@ def scan(
         f"{result.files} files · {result.open} open · [red]{result.new} new[/] · "
         f"[green]{result.resolved} resolved[/] · {result.reopened} reopened · {result.seconds}s"
     )
+    if result.tools:
+        console.print(f"Tools: {', '.join(result.tools)}")
+    for tool, why in result.skipped_tools.items():
+        console.print(f"[yellow]Skipped {tool}:[/] {why}")
     console.print("See them with: tokenwise findings · weekly report: tokenwise findings --report")
 
 
