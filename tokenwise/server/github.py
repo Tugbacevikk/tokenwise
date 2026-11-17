@@ -28,6 +28,34 @@ class GitHubError(Exception):
     pass
 
 
+class RateLimited(GitHubError):
+    """GitHub asked us to slow down; `wait` is how many seconds it wants."""
+
+    def __init__(self, message: str, wait: int) -> None:
+        super().__init__(message)
+        self.wait = wait
+
+
+MAX_WAIT = 3600
+
+
+def rate_limit_wait(status: int, headers, text: str, now: float | None = None) -> int | None:
+    """Seconds to wait if this response is GitHub's primary or secondary rate limit."""
+    if status not in (403, 429):
+        return None
+    now = time.time() if now is None else now
+    retry_after = headers.get("retry-after")
+    if retry_after and retry_after.isdigit():
+        return min(MAX_WAIT, max(1, int(retry_after)))
+    if headers.get("x-ratelimit-remaining") == "0":
+        reset = headers.get("x-ratelimit-reset", "")
+        wait = int(reset) - int(now) if reset.isdigit() else 60
+        return min(MAX_WAIT, max(1, wait + 1))
+    if status == 429 or "secondary rate limit" in text.lower():
+        return 60
+    return None
+
+
 def mask(text: str) -> str:
     """Removes anything that looks like a GitHub token from a message."""
     return _BASIC.sub(r"\1***", _TOKEN.sub("***", text or ""))
@@ -100,7 +128,11 @@ def git_fetch(url: str, ref: str, repo: Path, token: str = "") -> None:
 
 
 def git_push(url: str, repo: Path, branch: str, token: str = "") -> None:
-    _git(["push", "-q", url, f"HEAD:refs/heads/{branch}"], repo, token)
+    """Force-pushes to Tokenwise's own branch: a retried job rebuilds the same change on a new
+    commit, and only tokenwise/fix-N branches are ever pushed to."""
+    if not branch.startswith("tokenwise/"):
+        raise GitHubError(f"refusing to push to {branch}")
+    _git(["push", "-q", url, f"+HEAD:refs/heads/{branch}"], repo, token)
 
 
 @dataclass
@@ -147,6 +179,9 @@ class GitHubApp:
         return data["token"]
 
     def _json(self, response: httpx.Response):
+        wait = rate_limit_wait(response.status_code, response.headers, response.text)
+        if wait is not None:
+            raise RateLimited(f"GitHub rate limit: retry in {wait} s", wait)
         if response.status_code >= 400:
             raise GitHubError(mask(f"GitHub {response.status_code}: {response.text[:300]}"))
         return response.json() if response.content else {}
@@ -172,6 +207,8 @@ class GitHubApp:
     def upsert_comment(self, installation_id: int, full_name: str, number: int, body: str,
                        comment_id: int | None) -> int:  # fmt: skip
         body = f"{COMMENT_MARKER}\n{body}"
+        # no id stored (a job that died after posting): look for our marked comment first
+        comment_id = comment_id or self._marked_comment(installation_id, full_name, number)
         if comment_id:
             try:
                 data = self._call(installation_id, "PATCH",
@@ -184,8 +221,27 @@ class GitHubApp:
                           json={"body": body})  # fmt: skip
         return data["id"]
 
+    def _marked_comment(self, installation_id: int, full_name: str, number: int) -> int | None:
+        for page in range(1, 11):
+            items = self._call(installation_id, "GET",
+                               f"/repos/{full_name}/issues/{number}/comments",
+                               params={"per_page": 100, "page": page})  # fmt: skip
+            for item in items:
+                if (item.get("body") or "").startswith(COMMENT_MARKER) and (
+                    (item.get("user") or {}).get("type") == "Bot"
+                ):
+                    return item["id"]
+            if len(items) < 100:
+                break
+        return None
+
     def create_draft_pr(self, installation_id: int, full_name: str, head: str, base: str,
                         title: str, body: str) -> str:  # fmt: skip
+        owner = full_name.split("/", 1)[0]
+        existing = self._call(installation_id, "GET", f"/repos/{full_name}/pulls",
+                              params={"head": f"{owner}:{head}", "state": "open"})  # fmt: skip
+        if existing:  # a retried job: the PR was opened before the job could record it
+            return existing[0]["html_url"]
         data = self._call(installation_id, "POST", f"/repos/{full_name}/pulls",
                           json={"title": title, "head": head, "base": base, "body": body,
                                 "draft": True})  # fmt: skip

@@ -14,3 +14,4 @@ htmlcov/
 benchmark/github/.repos/
 .env.server
 *.pem
+backups/

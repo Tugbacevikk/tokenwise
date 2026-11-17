@@ -50,5 +50,20 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  backup:
+    # one verified pg_dump a day into ./backups, kept 14 days (deploy/backup.sh)
+    image: postgres:16
+    entrypoint: ["sh", "/deploy/backup.sh"]
+    environment:
+      DATABASE_URL: postgresql://tokenwise:${POSTGRES_PASSWORD}@db:5432/tokenwise
+      BACKUP_KEEP_DAYS: "14"
+    volumes:
+      - ./deploy:/deploy:ro
+      - ./backups:/backups
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   pgdata:

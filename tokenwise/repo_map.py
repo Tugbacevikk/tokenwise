@@ -192,8 +192,11 @@ def outline(path: str, source: str) -> list[str]:
     return outline_js(source)
 
 
-_TEST_DIRS = {"test", "tests", "__tests__", "spec", "specs", "testing", "typing_tests"}
-_TEST_FILE = re.compile(r"(^test_.*|.*_test\.\w+|.*\.(test|spec)\.\w+|.*Tests?\.\w+)$")
+_TEST_DIRS = {
+    "test", "tests", "__tests__", "spec", "specs", "testing", "typing_tests", "fixtures",
+    "__fixtures__", "__mocks__",
+}  # fmt: skip
+_TEST_FILE = re.compile(r"(^test[_-].*|.*_test\.\w+|.*\.(test|spec)\.\w+|.*Tests?\.\w+)$")
 _NAME_ONLY = re.compile(r"\(.*$")
 
 # Map detail levels, most detailed first. A large repository gets the first one that fits

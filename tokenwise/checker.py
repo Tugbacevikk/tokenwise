@@ -80,6 +80,7 @@ def run_command(
 
 
 DOCKER_ERROR = 125  # `docker run` itself failed: no daemon, no image, bad option
+NOBODY = 65534
 
 
 def docker_args(settings: Settings, root: Path, name: str, checks_dir: Path | None) -> list[str]:
@@ -100,17 +101,33 @@ def docker_args(settings: Settings, root: Path, name: str, checks_dir: Path | No
         "-v", f"{root}:/work",
         "-w", "/work",
     ]  # fmt: skip
-    if hasattr(os, "getuid"):  # write the copy as its owner, never as root
-        args += ["--user", f"{os.getuid()}:{os.getgid()}"]
+    args += ["--ulimit", "nofile=1024:1024"]
+    if settings.sandbox_runtime:
+        args += ["--runtime", settings.sandbox_runtime]
+    if hasattr(os, "getuid"):  # never root inside: the copy's owner, or nobody
+        uid = os.getuid()
+        args += ["--user", f"{uid}:{os.getgid()}" if uid else f"{NOBODY}:{NOBODY}"]
     if checks_dir is not None:
         args += ["-v", f"{checks_dir}:/checks:ro"]
     return args
+
+
+def _open_to_nobody(root: Path) -> None:
+    """When the worker runs as root the check runs as `nobody`, which must be able to write
+    the throwaway copy (test caches, build output)."""
+    for path in [root, *root.rglob("*")]:
+        if path.is_symlink():
+            continue
+        mode = path.stat().st_mode
+        path.chmod(mode | (0o777 if path.is_dir() else 0o666))
 
 
 def run_in_docker(
     settings: Settings, command: str, root: Path, checks_dir: Path | None = None
 ) -> CheckResult:
     name = f"tokenwise-check-{uuid.uuid4().hex[:12]}"
+    if hasattr(os, "getuid") and os.getuid() == 0:
+        _open_to_nobody(root)
     script = expand(command, "/checks" if checks_dir else None, python="python")
     args = docker_args(settings, root, name, checks_dir)
     args += [settings.sandbox_image, "sh", "-c", script]

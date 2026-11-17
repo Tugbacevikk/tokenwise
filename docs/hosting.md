@@ -127,11 +127,81 @@ Bir adım beklendiği gibi çalışmazsa `docker compose logs worker --tail 50` 
 
 - **Depodaki `tokenwise.toml` güvenilmez girdi sayılır.** Sunucu bu dosyadan yalnızca `check`, `check_timeout` (en fazla 900 s), `extensions`, `ignore_dirs`, `focus_lines` ve `max_files` değerlerini alır. Model sağlayıcısını, adresini, sandbox'ı, imajı ve ağ ayarını sunucu belirler.
 - **Kontrol komutu yalnızca konteynerde çalışır.** Konteynerde ağ kapalıdır, sistem salt okunurdur, hiçbir yetki (capability) verilmez ve CPU, bellek ve süreç sınırları uygulanır. Konteyner deponun geçici kopyasını görür. Docker ulaşılamazsa kontrol "başarısız" değil "atlandı" sayılır; öneri bu bilgiyle gösterilir.
-- **Docker soketine erişim, host'ta root yetkisine denktir.** Worker'ı yalnızca bu iş için ayrılmış bir makinede ya da sanal makinede çalıştırın. Daha sıkı izolasyon için Docker'ı [rootless](https://docs.docker.com/engine/security/rootless/) modda ya da gVisor (`--runtime=runsc`) ile kullanın.
+- **Docker soketine erişim, host'ta root yetkisine denktir.** Bu yüzden worker'ı yalnızca bu iş için ayrılmış bir makinede ya da sanal makinede çalıştırın. Önerilen yerleşim için aşağıdaki "Üretim yerleşimi" bölümüne bakın.
+- **Kontrol hiçbir zaman root olarak çalışmaz.** Konteyner, worker'ın kendi kullanıcısıyla çalışır. Worker root olarak çalışıyorsa konteyner `nobody` (65534) kullanıcısına düşer. Açık dosya sayısı 1024 ile sınırlıdır.
 - **Model anahtarları** `TOKENWISE_SECRET_KEY` ile şifrelenmiş olarak saklanır ve API hiçbir zaman geri döndürmez. Bu anahtarı değiştirirseniz kayıtlı anahtarlar okunamaz hale gelir; sahiplerin anahtarı yeniden girmesi gerekir.
 - **GitHub tokenları** bellekte, en fazla bir saatlik ömürleriyle tutulur. Git'e tek komutluk bir HTTP başlığı olarak verilir; uzak adrese ya da `.git/config` dosyasına yazılmaz. Hata mesajlarında maskelenir.
 - **Her API isteğinde üyelik kontrol edilir.** Başka bir organization'a ait kayıtlar "bulunamadı" (404) olarak döner. Düzeltmeyi onaylamak, reddetmek ve model ayarını değiştirmek için sahip olmak gerekir. Bir şeyi değiştiren istekler `X-Tokenwise: 1` başlığını taşımak zorundadır, böylece başka sitelerden gönderilen formlar işe yaramaz.
 - **App kaldırılınca** o organization'ın bütün verisi silinir: depolar, bulgular, PR raporları, düzeltmeler, maliyet kayıtları ve işler.
+
+## Üretim yerleşimi
+
+Worker müşteri kodunu (projenin kontrol komutunu) çalıştıran tek parçadır. Bu yüzden ayrı bir güven sınırı içinde tutulur:
+
+| Makine | Üzerinde çalışan | Erişimi |
+| --- | --- | --- |
+| Web makinesi | `web`, PostgreSQL | İnternete açık (443). Docker soketi yok. |
+| Worker sanal makinesi (bir ya da daha fazla) | `worker`, Docker | Yalnızca PostgreSQL'e ve GitHub'a çıkış. İçeriden gelen bağlantı yok. Başka bir hizmet çalıştırılmaz. |
+
+- **gVisor:** Kontroller ile host çekirdeği arasına kullanıcı alanında çalışan bir çekirdek koyar; bir konteynerden kaçış ihtimalini büyük ölçüde azaltır. Kurulum şöyle:
+
+  ```bash
+  # worker makinesinde
+  curl -fsSL https://gvisor.dev/archive.key | sudo gpg --dearmor -o /usr/share/keyrings/gvisor.gpg
+  echo "deb [signed-by=/usr/share/keyrings/gvisor.gpg] https://storage.googleapis.com/gvisor/releases release main" \
+    | sudo tee /etc/apt/sources.list.d/gvisor.list
+  sudo apt update && sudo apt install -y runsc
+  sudo runsc install && sudo systemctl restart docker
+  ```
+
+  Güncel kurulum adımları için: https://gvisor.dev/docs/user_guide/install/ . Ardından `.env.server` dosyasına `TOKENWISE_SANDBOX_RUNTIME=runsc` yazın. `tokenwise server doctor` komutu bu runtime'ın Docker'da kayıtlı olup olmadığını kontrol eder.
+- **Rootless Docker:** Docker servisi de root olmadan çalışabilir. Böylece soket ele geçirilse bile host'ta root yetkisi kazanılmaz. Rootless kurulumda `/var/run/docker.sock` yerine kullanıcının soket yolu worker'a bağlanır.
+- **Veritabanı kullanıcısı:** Worker için yalnızca Tokenwise tablolarına erişebilen ayrı bir PostgreSQL kullanıcısı açın; süper kullanıcı vermeyin.
+
+## Güvenilirlik
+
+- **Webhook tekrarları:** Her teslimatın `X-GitHub-Delivery` kimliği, olayın etkileriyle aynı transaction içinde kaydedilir. GitHub aynı olayı yeniden gönderirse hiçbir şey yapılmaz. Yarıda kalan bir teslimat ise yeniden işlenir. Kayıtlar 30 gün tutulur.
+- **Sıra dışı olaylar:** Push ve PR işleri olayın zamanını taşır. Kuyrukta bekleyen iş her zaman en yeni girdiyi tutar. Daha eski bir olay geç gelirse atlanır.
+- **Aynı anda çalışmama:** Aynı deponun taramaları, aynı PR'ın raporu ve aynı düzeltme hiçbir zaman eşzamanlı çalışmaz.
+- **Kalp atışı (heartbeat):** Çalışan iş her dakika "hâlâ çalışıyorum" kaydı bırakır. 10 dakika boyunca kayıt gelmezse worker'ın düştüğü varsayılır ve iş kuyruğa geri döner.
+- **Güvenli yeniden deneme:** Yeniden denenen bir iş aynı PR yorumunu ve aynı taslak PR'ı bulup kullanır; ikinci bir kopya açmaz.
+- **Güncel olmayan öneri:** Onay verildiğinde öneri, ana dalın o anki haliyle karşılaştırılır. Bu arada dosya değiştiyse düzeltme "Güncel değil" durumuna geçer ve yeni öneri istenir.
+- **Oturumlar:** Bir oturum 24 saat sürer. Üyelik her girişte GitHub'dan yeniden okunur. GitHub organization'ından çıkarılan biri en geç bir gün içinde erişimini kaybeder. "Tüm cihazlarda çıkış yap" seçeneği kişinin bütün oturumlarını kapatır.
+
+## Yedekleme
+
+`docker compose up` komutu `backup` servisini de başlatır. Bu servis her gün bir `pg_dump` alır ve `./backups` klasörüne yazar. Her yedek `pg_restore --list` ile okunabilirliği doğrulandıktan sonra kaydedilir ve 14 günden eski olanlar silinir. Bozuk bir yedek, sağlam olanların yerine geçmez.
+
+- **Hemen bir yedek almak için:** `docker compose run --rm -e BACKUP_EVERY=0 backup`
+- **Makine dışına kopya:** Yedekler aynı diskte durdukça makineyle birlikte kaybolabilir. `./backups` klasörünü her gün başka bir yere kopyalayın (örneğin `rclone sync ./backups remote:tokenwise-backups`).
+- **Geri yükleme:**
+
+  ```bash
+  docker compose stop web worker
+  docker compose exec -T db dropdb -U tokenwise tokenwise
+  docker compose exec -T db createdb -U tokenwise tokenwise
+  docker compose exec -T db pg_restore -U tokenwise -d tokenwise --no-owner < backups/tokenwise-YYYYMMDD-HHMMSS.dump
+  docker compose start web worker
+  ```
+
+  Geri yüklenen veritabanındaki model anahtarları yalnızca aynı `TOKENWISE_SECRET_KEY` ile okunabilir. Bu anahtarı yedeklerden ayrı bir yerde saklayın.
+- **Geri yüklemeyi deneyin:** Ayda bir, bir yedeği boş bir veritabanına geri yükleyip `tokenwise server doctor` komutunu çalıştırın. Hiç denenmemiş bir yedeğe güvenmeyin.
+
+## İzleme
+
+`TOKENWISE_METRICS_TOKEN` tanımlıysa `GET /metrics` adresi Prometheus formatında şu metrikleri verir (istek `Authorization: Bearer <token>` başlığı taşımalıdır):
+
+- iş türüne ve durumuna göre iş sayısı,
+- son bir saatte başarısız olan işler,
+- ortalama iş süresi,
+- en eski bekleyen işin bekleme süresi,
+- son bir saatte gelen webhook sayısı,
+- düzeltmelerin durumları.
+
+Önerilen alarmlar:
+
+- `tokenwise_oldest_queued_job_seconds > 600`: worker yetişemiyor ya da çalışmıyor.
+- `tokenwise_jobs_failed_last_hour > 5`: GitHub ya da Docker tarafında bir sorun var.
 
 ## Değişkenler
 
@@ -143,6 +213,8 @@ Bir adım beklendiği gibi çalışmazsa `docker compose logs worker --tail 50` 
 | `GITHUB_APP_ID`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_WEBHOOK_SECRET` | evet | GitHub App bilgileri |
 | `GITHUB_PRIVATE_KEY` ya da `GITHUB_PRIVATE_KEY_PATH` | evet | App'in PEM anahtarı |
 | `TOKENWISE_SANDBOX_IMAGE` | hayır | Kontrol imajı; varsayılan `python:3.12-slim` |
+| `TOKENWISE_SANDBOX_RUNTIME` | hayır | `runsc` = gVisor; boşsa Docker'ın varsayılanı |
+| `TOKENWISE_METRICS_TOKEN` | hayır | `/metrics` için bearer token; boşsa bu adres yok |
 | `TOKENWISE_SCAN_TOOLS` | hayır | Varsayılan `ruff,bandit`; ayrıca `coverage` (depodaki `coverage.json` / `coverage.xml` okunur) |
 | `TOKENWISE_ALLOWED_MODEL_URLS` | hayır | Sahiplerin seçebileceği OpenAI uyumlu adresler; boşsa yalnızca Anthropic kullanılabilir |
 | `TOKENWISE_WORK_DIR` | worker | Klonlar ve kontrol kopyaları için klasör. Docker host'unda da aynı yolda olmalı |
@@ -150,6 +222,6 @@ Bir adım beklendiği gibi çalışmazsa `docker compose logs worker --tail 50` 
 ## Ölçek
 
 - Worker sayısını artırmak için: `docker compose up -d --scale worker=3`. İşler `FOR UPDATE SKIP LOCKED` ile alındığı için aynı işi iki worker almaz.
-- Yarıda kalan bir iş (worker çöktüyse) 2 saat sonra kuyruğa geri döner.
+- Worker çökerse yarıda kalan iş 10 dakika sonra kuyruğa geri döner (bkz. Güvenilirlik).
 - Başarısız iş artan aralıklarla 3 kez denenir. Aynı işin daha yeni hali kuyruktaysa eskisi tekrar denenmez.
 - Aynı dala art arda gelen push'lar tek tarama olur; aynı PR'a art arda gelen push'lar da tek rapor olur.

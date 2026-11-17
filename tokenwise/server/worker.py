@@ -14,6 +14,7 @@ import logging
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 import traceback
 from collections.abc import Callable
@@ -27,7 +28,7 @@ from ..pipeline import run as run_agent
 from ..release import GuardError, assess, to_markdown
 from . import db, queue
 from .config import ServerConfig, make_model, repo_settings
-from .github import GitHub, GitHubError, mask
+from .github import GitHub, GitHubError, RateLimited, mask
 
 log = logging.getLogger("tokenwise.worker")
 BOT_NAME = "tokenwise"
@@ -35,7 +36,42 @@ BOT_EMAIL = "tokenwise@users.noreply.github.com"
 
 
 class JobError(Exception):
-    """A failure that retrying will not fix (missing row, bad state)."""
+    """A failure that retrying will not fix (missing row, bad state). `fix_status` is what a
+    fix job leaves its fix as: "failed", or "stale" when the code moved on."""
+
+    def __init__(self, message: str, fix_status: str = "failed") -> None:
+        super().__init__(message)
+        self.fix_status = fix_status
+
+
+class Heartbeat:
+    """Keeps a running job's lock fresh from a side thread with its own connection, so a
+    long job is not mistaken for a dead worker."""
+
+    def __init__(self, connect: Callable, job_id: int, worker: str,
+                 every: float = queue.HEARTBEAT_SECONDS) -> None:  # fmt: skip
+        self.connect, self.job_id, self.worker, self.every = connect, job_id, worker, every
+        self.stop = threading.Event()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self) -> None:
+        try:
+            conn = self.connect()
+        except Exception:  # noqa: BLE001 - no heartbeat is safer than a crashed job
+            return
+        try:
+            while not self.stop.wait(self.every):
+                queue.heartbeat(conn, self.job_id, self.worker)
+        finally:
+            conn.close()
+
+    def __enter__(self) -> Heartbeat:
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.stop.set()
+        self.thread.join(timeout=5)
 
 
 class Worker:
@@ -46,8 +82,10 @@ class Worker:
         server: ServerConfig,
         name: str = "",
         model_factory: Callable | None = None,
+        connect: Callable | None = None,
     ) -> None:
         self.conn = conn
+        self.connect = connect or (lambda: db.connect(server.database_url))
         self.github = github
         self.server = server
         self.name = name or f"{socket.gethostname()}-{id(self):x}"
@@ -71,10 +109,15 @@ class Worker:
         try:
             if handler is None:
                 raise JobError(f"unknown job kind {job['kind']}")
-            handler(job["payload"])
+            with Heartbeat(self.connect, job["id"], self.name):
+                handler(job["payload"])
+        except RateLimited as exc:
+            log.info("job %s waits %s s for GitHub's rate limit", job["id"], exc.wait)
+            queue.defer(self.conn, job, exc.wait, str(exc))
+            job["status"] = "deferred"
         except JobError as exc:
             job["status"] = queue.fail(self.conn, job, mask(str(exc)), retry=False)
-            self._job_failed(job, str(exc))
+            self._job_failed(job, str(exc), exc.fix_status)
         except Exception as exc:  # noqa: BLE001 - one job must never stop the worker
             message = mask(f"{type(exc).__name__}: {exc}")
             log.warning("job %s failed: %s\n%s", job["id"], message, mask(traceback.format_exc()))
@@ -82,7 +125,7 @@ class Worker:
             if job["status"] == "failed":
                 self._job_failed(job, message)
         else:
-            queue.finish(self.conn, job["id"])
+            queue.finish(self.conn, job["id"], self.name)
             job["status"] = "done"
         return job
 
@@ -91,9 +134,9 @@ class Worker:
             if self.run_once() is None:
                 time.sleep(idle)
 
-    def _job_failed(self, job: dict, message: str) -> None:
+    def _job_failed(self, job: dict, message: str, fix_status: str = "failed") -> None:
         if job["kind"] in ("fix_propose", "fix_push"):
-            db.update_fix(self.conn, job["payload"]["fix_id"], status="failed",
+            db.update_fix(self.conn, job["payload"]["fix_id"], status=fix_status,
                           error=mask(message)[:2000])  # fmt: skip
 
     def _workspace(self) -> tempfile.TemporaryDirectory:
@@ -135,8 +178,16 @@ class Worker:
 
     # ------------------------------------------------------------ RepoDoctor
 
+    def _older_than_seen(self, payload: dict, seen: str | None) -> bool:
+        """A webhook that GitHub sent before the one already handled (they can arrive late)."""
+        event_at = payload.get("event_at") or ""
+        return bool(event_at and seen and event_at < seen)
+
     def scan(self, payload: dict) -> None:
         repo = self._repo(payload["repository_id"])
+        if self._older_than_seen(payload, repo.get("last_event_at")):
+            log.info("scan of %s skipped: a newer push was scanned", repo["full_name"])
+            return
         with self._workspace() as tmp:
             root = Path(tmp) / "repo"
             sha = self.github.clone(repo["installation_id"], repo["full_name"],
@@ -148,12 +199,25 @@ class Worker:
             db.record_scan(self.conn, repo["id"], sha, found, len(graph.files),
                            round(time.monotonic() - started, 2), {"builtin", *tools.ran},
                            payload.get("scan_type", "push"))  # fmt: skip
+        if payload.get("event_at"):
+            self.conn.execute(
+                "UPDATE repositories SET last_event_at = GREATEST(COALESCE(last_event_at, ''), %s)"
+                " WHERE id = %s",
+                (payload["event_at"], repo["id"]),
+            )
 
     # ------------------------------------------------------------ ReleaseGuard
 
     def pr_risk(self, payload: dict) -> None:
         repo = self._repo(payload["repository_id"])
         number, base = payload["number"], payload["base_ref"]
+        seen = self.conn.execute(
+            "SELECT event_at FROM pull_requests WHERE repository_id = %s AND number = %s",
+            (repo["id"], number),
+        ).fetchone()
+        if self._older_than_seen(payload, seen and seen["event_at"]):
+            log.info("PR #%s report skipped: a newer push was reported", number)
+            return
         with self._workspace() as tmp:
             root = Path(tmp) / "repo"
             sha = self.github.clone(repo["installation_id"], repo["full_name"],
@@ -166,7 +230,7 @@ class Worker:
                 raise JobError(str(exc)) from exc
         data = report.to_dict()
         data["markdown"] = to_markdown(report)
-        old = db.save_pr(self.conn, repo["id"], number, sha, data)
+        old = db.save_pr(self.conn, repo["id"], number, sha, data, payload.get("event_at"))
         link = f"{self.server.public_url}/#/repos/{repo['id']}"
         body = data["markdown"] + f"\n[Tokenwise panelinde aç]({link}) · commit `{sha[:12]}`\n"
         comment_id = self.github.upsert_comment(
@@ -209,8 +273,9 @@ class Worker:
             return
         changes = [{"path": c["path"], "old": c["old"], "new": c["new"], "diff": c["diff"]}
                    for c in data["changes"]]  # fmt: skip
-        db.update_fix(self.conn, fix["id"], status="proposed", summary=summary, base_sha=sha,
-                      changes=changes)  # fmt: skip
+        if db.move_fix(self.conn, fix["id"], "queued", "proposed", summary=summary,
+                       base_sha=sha, changes=changes) is None:  # fmt: skip
+            raise JobError("the fix changed while the proposal was being made")
 
     def fix_push(self, payload: dict) -> None:
         fix = db.fix(self.conn, payload["fix_id"])
@@ -224,14 +289,23 @@ class Worker:
             raise JobError("the fix has no changes")
         with self._workspace() as tmp:
             root = Path(tmp) / "repo"
-            self.github.clone(repo["installation_id"], repo["full_name"], fix["base_sha"], root)
+            # the default branch as it is now, not as it was when the model saw it: if a file
+            # changed since, the approved diff would no longer be what was reviewed
+            head = self.github.clone(repo["installation_id"], repo["full_name"],
+                                     repo["default_branch"], root)  # fmt: skip
             for change in changes:
                 path = (root / change.path).resolve()
                 if not path.is_relative_to(root.resolve()):
                     raise JobError(f"path outside the repository: {change.path}")
                 current = path.read_text("utf-8") if path.exists() else None
-                if (current or "").replace("\r\n", "\n") != (change.old or ""):
-                    raise JobError(f"{change.path} is not what the proposal was made for")
+                expected = change.old
+                if (current.replace("\r\n", "\n") if current is not None else None) != expected:
+                    raise JobError(
+                        f"{change.path} öneri hazırlandıktan sonra {repo['default_branch']} "
+                        f"dalında değişti ({(fix['base_sha'] or '')[:12]} → {head[:12]}). "
+                        "Yeni bir öneri isteyin.",
+                        fix_status="stale",
+                    )
             apply_changes(replace(repo_settings(root, self.server), root=root), changes)
             title = f"tokenwise: {finding['title'] if finding else 'fix'}"
             message = (
@@ -255,6 +329,8 @@ class Worker:
         try:
             url = self.github.create_draft_pr(repo["installation_id"], repo["full_name"], branch,
                                               repo["default_branch"], title, body)  # fmt: skip
+        except RateLimited:
+            raise
         except GitHubError as exc:
             raise JobError(str(exc)) from exc
         db.update_fix(self.conn, fix["id"], status="pushed", branch=branch, pr_url=url, error=None)

@@ -7,6 +7,30 @@ a change that breaks existing use bumps major.
 
 First release.
 
+- Hosted: GitHub rate limits are waited out without using up a job's attempts; /api and
+  /auth are rate-limited per client. Daily verified PostgreSQL backups (`backup` service).
+  The dashboard shows "first scan running" while a new installation is prepared and a
+  plain-language reason when a scan fails.
+- ReleaseGuard's "changed function no test calls" list leaves out nested helpers and
+  functions whose callers the tests reach.
+- Fixed: install hints for the `web` and `server` extras lost their `[extra]` part.
+
+- Hosted reliability: webhook deliveries are recorded (a redelivery does nothing), events
+  arriving out of order cannot replace newer ones, jobs with the same key never run together,
+  running jobs send heartbeats, retried jobs reuse their PR comment, branch and draft PR, and
+  an approval is checked against the default branch as it is now ("stale" if a file changed).
+- Hosted security: one-day sessions with membership re-read at every sign-in, logout on all
+  devices, `__Host-` cookies; checks never run as root (`nobody` when the worker is root),
+  open files limited, optional gVisor (`TOKENWISE_SANDBOX_RUNTIME=runsc`).
+- `GET /metrics` (Prometheus) behind `TOKENWISE_METRICS_TOKEN`.
+- Tokenwise runs ReleaseGuard on its own pull requests and RepoDoctor weekly
+  (.github/workflows/tokenwise.yml).
+
+- JS/TS functions get complexity and length findings (Tree-sitter), and ReleaseGuard's
+  complexity signal now covers them: on 4 JS/TS repositories its AUC went from 0.50 to
+  0.54-0.83. Imports of a project's own packages by name (`"zod/v4"`) are resolved through
+  package.json `name`/`exports`. `fixtures/`, `__mocks__/` and `test-*.ts` count as tests.
+
 - Measured on 10 open-source repositories (docs/measurements.md): findings 1537 -> 394 after
   the fixes below, about 10% false alarms in a hand-checked sample, risk score mean AUC 0.68.
 - Quieter RepoDoctor: docs, examples, scripts and tool config are support code (no test, style

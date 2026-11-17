@@ -75,6 +75,10 @@
   <div id="settingsbox" hidden>
     <button id="settings-btn" style="width:100%">Model ayarları</button>
   </div>
+  <div id="logoutbox" hidden style="margin-top:auto; display:flex; flex-direction:column; gap:6px">
+    <button id="logout-btn">Çıkış yap</button>
+    <button id="logout-all-btn" class="muted">Tüm cihazlarda çıkış yap</button>
+  </div>
 </aside>
 <main id="main"></main>
 <div id="toast"></div>
@@ -104,6 +108,9 @@ function renderLogin() {
 async function boot() {
   try { state.me = await api("/api/me"); } catch { return; }
   $("who").textContent = "@" + state.me.user.login;
+  $("logoutbox").hidden = false;
+  $("logout-btn").onclick = async () => { await api("/auth/logout", { method: "POST" }); location.reload(); };
+  $("logout-all-btn").onclick = async () => { await api("/auth/logout-all", { method: "POST" }).catch(() => {}); location.reload(); };
   if (!state.me.orgs.length) {
     $("main").innerHTML = `<div class="empty"><h2>Henüz kurulum yok</h2><p class="muted">Tokenwise GitHub
       uygulamasını bir hesaba ya da organization'a kurun; sonra bu sayfaya dönün.</p></div>`;
@@ -124,12 +131,23 @@ async function selectOrg(id, repoId = null) {
   $("settings-btn").onclick = renderSettings;
   const repos = await api(`/api/orgs/${id}/repos`);
   $("repobox").hidden = false;
+  const busy = r => r.scan_state === "queued" || r.scan_state === "running";
   $("repos").innerHTML = repos.map(r => `<div class="repo" data-id="${r.id}">
       <span>${esc(r.full_name.split("/")[1] || r.full_name)}</span>
-      <span class="muted">${r.overall ?? "–"}</span></div>`).join("") || `<div class="muted">Depo yok</div>`;
+      <span class="muted">${busy(r) && r.overall == null ? "taranıyor…" : (r.overall ?? "–")}</span></div>`).join("")
+    || `<div class="muted">${state.org.syncing ? "Depolar okunuyor…" : "Depo yok"}</div>`;
+  clearTimeout(selectOrg.timer);
+  if (state.org.syncing || repos.some(r => busy(r) && r.overall == null)) {  // first scans: look again soon
+    selectOrg.timer = setTimeout(async () => { state.me = await api("/api/me"); selectOrg(id, state.repo?.repository.id); }, 5000);
+  }
   document.querySelectorAll(".repo").forEach(el => el.onclick = () => selectRepo(+el.dataset.id));
   const first = repoId && repos.some(r => r.id === repoId) ? repoId : repos[0]?.id;
-  if (first) selectRepo(first); else $("main").innerHTML = `<div class="empty muted">Bu kurulumda depo yok.</div>`;
+  if (first) selectRepo(first);
+  else $("main").innerHTML = state.org.syncing
+    ? `<div class="empty"><h2>Kurulum hazırlanıyor</h2><p class="muted">GitHub'dan depolar okunuyor ve her biri ilk kez taranıyor.
+       Bu genellikle bir dakikadan kısa sürer; sayfa kendiliğinden yenilenecek.</p></div>`
+    : `<div class="empty"><h2>Bu kurulumda depo yok</h2><p class="muted">GitHub'da App ayarlarından bir depo ekleyin;
+       burada kendiliğinden görünecek.</p></div>`;
 }
 
 async function selectRepo(id) {
@@ -140,7 +158,15 @@ async function selectRepo(id) {
 }
 
 function renderRepo() {
-  const { repository: r, snapshots } = state.repo;
+  const { repository: r, snapshots, scan } = state.repo;
+  if (!snapshots.length && (!scan || scan.state !== "failed")) {  // nothing to show before the first scan
+    $("main").innerHTML = `<div class="empty"><h2>${esc(r.full_name)}</h2><p>İlk tarama sürüyor…</p>
+      <p class="muted">Tarama model çağırmaz ve genellikle birkaç saniye ile birkaç dakika arasında sürer.
+      Sonuçlar gelince sayfa kendiliğinden güncellenecek.</p></div>`;
+    clearTimeout(renderRepo.timer);
+    renderRepo.timer = setTimeout(() => selectRepo(r.id), 5000);
+    return;
+  }
   const last = snapshots[snapshots.length - 1];
   const scores = last ? Object.entries(last.scores).filter(([k]) => k !== "overall") : [];
   const labels = { quality: "Kalite", testing: "Test", security: "Güvenlik", architecture: "Mimari", maintainability: "Bakım" };
@@ -148,6 +174,7 @@ function renderRepo() {
     <div class="row" style="justify-content:space-between"><h2 style="margin:0">${esc(r.full_name)}</h2>
       <button id="scan-btn">Şimdi tara</button></div>
     <p class="muted">Dal <code>${esc(r.default_branch)}</code> · son tarama ${r.last_scan_at ? new Date(r.last_scan_at).toLocaleString("tr-TR") : "henüz yok"}</p>
+    ${scan && scan.state === "failed" ? `<div class="card err">Son tarama başarısız: ${esc(scan.error)}</div>` : ""}
     <div class="card"><div class="scores">
       <div class="score"><span class="muted">Genel</span><b>${r.overall ?? "–"}</b></div>
       ${scores.map(([k, v]) => `<div class="score"><span class="muted">${labels[k] || k}</span><b>${v}</b></div>`).join("")}
@@ -188,7 +215,7 @@ async function renderFindings(status = "open") {
 }
 
 const FIX_STATUS = { queued: "Hazırlanıyor", proposed: "Onay bekliyor", approved: "Push ediliyor", pushed: "Taslak PR açıldı",
-                     failed: "Başarısız", rejected: "Reddedildi" };
+                     failed: "Başarısız", rejected: "Reddedildi", stale: "Güncel değil" };
 
 async function renderFixes() {
   const id = state.repo.repository.id;

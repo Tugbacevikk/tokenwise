@@ -158,6 +158,32 @@ def test_cycles_count_only_load_time_imports_and_not_the_stdlib(tmp_path):
     assert "pkg/a.py" in graph.deps["pkg/__init__.py"]
 
 
+def test_tests_importing_the_package_by_name_are_seen(tmp_path):
+    import json as _json
+
+    pkg = tmp_path / "packages" / "lib"
+    files = {
+        "src/index.ts": "export * from './core'\n",
+        "src/core.ts": "export function f() { return 1 }\n",
+        "src/v3/index.ts": "export { g } from './helpers/util'\n",
+        "src/v3/helpers/util.ts": "export function g() { return 2 }\n",
+        "src/extra/tool.ts": "export function h() { return 3 }\n",
+        "tests/core.test.ts": "import { f } from 'mylib'\nimport { g } from 'mylib/v3'\n"
+        "import { h } from 'mylib/extra/tool'\nimport fs from 'fs'\n",
+    }
+    for name, text in files.items():
+        (pkg / name).parent.mkdir(parents=True, exist_ok=True)
+        (pkg / name).write_text(text, "utf-8")
+    (pkg / "package.json").write_text(_json.dumps({"name": "mylib", "exports": {
+        ".": {"source": "./src/index.ts", "import": "./dist/index.js"},
+        "./v3": {"source": "./src/v3/index.ts", "import": "./dist/v3/index.js"}}}), "utf-8")  # fmt: skip
+    graph = build_graph(Settings(root=tmp_path))
+    test = "packages/lib/tests/core.test.ts"
+    assert graph.deps[test] == {"packages/lib/src/index.ts", "packages/lib/src/v3/index.ts",
+                                "packages/lib/src/extra/tool.ts"}  # fmt: skip
+    assert graph.tested("packages/lib/src/v3/helpers/util.ts")  # through the v3 entry
+
+
 def test_graph_finds_import_cycles(tmp_path):
     (tmp_path / "a.py").write_text("import b\n")
     (tmp_path / "b.py").write_text("import c\n")

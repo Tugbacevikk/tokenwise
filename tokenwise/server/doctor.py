@@ -93,6 +93,13 @@ def check_docker(server: ServerConfig) -> list[Check]:
         return [Check("Docker", False, "Docker servisine ulaşılamadı: "
                                        + info.stderr.strip()[:200])]  # fmt: skip
     checks = [Check("Docker", True, f"sunucu {info.stdout.strip()}")]
+    if server.sandbox_runtime:
+        runtimes = subprocess.run([docker, "info", "--format", "{{json .Runtimes}}"],
+                                  capture_output=True, text=True, timeout=30).stdout  # fmt: skip
+        found = f'"{server.sandbox_runtime}"' in runtimes
+        checks.append(Check("Sandbox runtime", found, server.sandbox_runtime + (
+            "" if found else ": Docker'da kayıtlı değil (gVisor kurulumu: docs/hosting.md)"
+        )))  # fmt: skip
     image = subprocess.run([docker, "image", "inspect", server.sandbox_image],
                            capture_output=True, text=True, timeout=30)  # fmt: skip
     checks.append(Check("Sandbox imajı", image.returncode == 0, server.sandbox_image + (

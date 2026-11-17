@@ -22,6 +22,7 @@ COMPLEXITY_HIGH = 20
 LONG_FUNCTION = 80
 LARGE_FILE = 600
 TODO_MIN = 3
+JS_EXTENSIONS = (".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx")
 
 _TODO = re.compile(r"\b(TODO|FIXME|XXX|HACK)\b")
 _SECRETS = (
@@ -105,6 +106,60 @@ def _call_name(node: ast.Call) -> str:
     return ".".join(reversed(parts))
 
 
+def size_findings(path: str, name: str, score: int, length: int, line: int) -> list[Finding]:
+    """Complexity and length findings for one function, in any language."""
+    found = []
+    if score > COMPLEXITY_MEDIUM:
+        found.append(
+            Finding(
+                "high-complexity",
+                "quality",
+                "high" if score > COMPLEXITY_HIGH else "medium",
+                path,
+                f"{name} karmaşık (karmaşıklık {score})",
+                f"Dallanma sayısı {score}; sınır {COMPLEXITY_MEDIUM}.",
+                line,
+                name,
+                {"complexity": score, "function": name},
+            )
+        )
+    if length > LONG_FUNCTION:
+        found.append(
+            Finding(
+                "long-function",
+                "quality",
+                "medium" if length > 2 * LONG_FUNCTION else "low",
+                path,
+                f"{name} uzun ({length} satır)",
+                f"Sınır {LONG_FUNCTION} satır.",
+                line,
+                name,
+                {"lines": length, "function": name},
+            )
+        )
+    return found
+
+
+def js_findings(path: str, source: str) -> list[Finding]:
+    """Complexity and length of JS/TS functions (needs Tree-sitter; nothing without it)."""
+    from .callgraph import js_function_sizes
+
+    found = []
+    for definition, score in js_function_sizes(path, source):
+        length = definition.end - definition.start + 1
+        found += size_findings(path, definition.name, score, length, definition.start)
+    return found
+
+
+def code_findings(path: str, source: str) -> list[Finding]:
+    """Function-level findings for a source file in a language we can parse."""
+    if path.endswith(".py"):
+        return python_findings(path, source)
+    if path.endswith(JS_EXTENSIONS) and not path.endswith(".d.ts"):
+        return js_findings(path, source)
+    return []
+
+
 def python_findings(path: str, source: str) -> list[Finding]:
     try:
         tree = ast.parse(source)
@@ -122,37 +177,8 @@ def python_findings(path: str, source: str) -> list[Finding]:
         ]
     found = []
     for name, node in _functions(tree):
-        score = complexity(node)
-        if score > COMPLEXITY_MEDIUM:
-            severity = "high" if score > COMPLEXITY_HIGH else "medium"
-            found.append(
-                Finding(
-                    "high-complexity",
-                    "quality",
-                    severity,
-                    path,
-                    f"{name} karmaşık (karmaşıklık {score})",
-                    f"Dallanma sayısı {score}; sınır {COMPLEXITY_MEDIUM}.",
-                    node.lineno,
-                    name,
-                    {"complexity": score, "function": name},
-                )
-            )
         length = (node.end_lineno or node.lineno) - node.lineno + 1
-        if length > LONG_FUNCTION:
-            found.append(
-                Finding(
-                    "long-function",
-                    "quality",
-                    "medium" if length > 2 * LONG_FUNCTION else "low",
-                    path,
-                    f"{name} uzun ({length} satır)",
-                    f"Sınır {LONG_FUNCTION} satır.",
-                    node.lineno,
-                    name,
-                    {"lines": length, "function": name},
-                )
-            )
+        found += size_findings(path, name, complexity(node), length, node.lineno)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -304,9 +330,9 @@ def analyze(settings: Settings, graph: Graph) -> list[Finding]:
         if outline(path, source):
             behaviour.add(path)
         support = is_support_file(path)
-        if path.endswith(".py") and not is_test_file(path):
+        if not is_test_file(path):
             # documentation snippets and scripts: their security still matters, their style less
-            found.extend(f for f in python_findings(path, source)
+            found.extend(f for f in code_findings(path, source)
                          if not support or f.category == "security")  # fmt: skip
         found.extend(
             f
