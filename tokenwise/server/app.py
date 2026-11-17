@@ -26,6 +26,9 @@ from __future__ import annotations
 
 import json
 import secrets
+import threading
+import time
+from collections import deque
 from collections.abc import Callable
 from datetime import timedelta
 from pathlib import Path
@@ -46,6 +49,38 @@ STATE_COOKIE = "tw_state"
 # from a GitHub organization loses access here within a day, without storing their token.
 SESSION_HOURS = 24
 PR_ACTIONS = ("opened", "synchronize", "reopened", "ready_for_review", "edited")
+# Requests per client address per minute. Webhooks are signed and not limited here.
+RATE_LIMITS = (("/auth/", 20), ("/api/", 240))
+
+
+class RateLimiter:
+    """A sliding one-minute window per (client, path group), kept in this process's memory.
+    With several web processes each one counts its own share, which is enough to stop one
+    client from flooding the API or the sign-in."""
+
+    def __init__(self, limits=RATE_LIMITS, clock=time.monotonic) -> None:
+        self.limits, self.clock = limits, clock
+        self.hits: dict[tuple[str, str], deque] = {}
+        self.lock = threading.Lock()
+
+    def check(self, client: str, path: str) -> int:
+        """0 if allowed, else seconds until the next request would be."""
+        group = next(((prefix, n) for prefix, n in self.limits if path.startswith(prefix)), None)
+        if group is None:
+            return 0
+        prefix, limit = group
+        now = self.clock()
+        with self.lock:
+            window = self.hits.setdefault((client, prefix), deque())
+            while window and window[0] <= now - 60:
+                window.popleft()
+            if len(window) >= limit:
+                return int(60 - (now - window[0])) + 1
+            window.append(now)
+            if len(self.hits) > 50_000:  # forget idle clients
+                for key in [k for k, w in self.hits.items() if not w or w[-1] <= now - 60]:
+                    del self.hits[key]
+            return 0
 
 
 class ModelBody(BaseModel):
@@ -69,6 +104,17 @@ def create_app(
     connect: Callable | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Tokenwise", docs_url=None, redoc_url=None)
+    limiter = RateLimiter()
+
+    @app.middleware("http")
+    async def rate_limit(request: Request, call_next):
+        client = request.client.host if request.client else "?"
+        wait = limiter.check(client, request.url.path)
+        if wait:
+            return JSONResponse({"detail": "Çok fazla istek; biraz sonra tekrar deneyin."},
+                                status_code=429, headers={"Retry-After": str(wait)})  # fmt: skip
+        return await call_next(request)
+
     connect = connect or (lambda: db.connect(server.database_url))
     secure = server.public_url.startswith("https://")
     # over https the cookie gets the __Host- prefix: browsers then refuse it unless it is

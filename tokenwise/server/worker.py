@@ -28,7 +28,7 @@ from ..pipeline import run as run_agent
 from ..release import GuardError, assess, to_markdown
 from . import db, queue
 from .config import ServerConfig, make_model, repo_settings
-from .github import GitHub, GitHubError, mask
+from .github import GitHub, GitHubError, RateLimited, mask
 
 log = logging.getLogger("tokenwise.worker")
 BOT_NAME = "tokenwise"
@@ -111,6 +111,10 @@ class Worker:
                 raise JobError(f"unknown job kind {job['kind']}")
             with Heartbeat(self.connect, job["id"], self.name):
                 handler(job["payload"])
+        except RateLimited as exc:
+            log.info("job %s waits %s s for GitHub's rate limit", job["id"], exc.wait)
+            queue.defer(self.conn, job, exc.wait, str(exc))
+            job["status"] = "deferred"
         except JobError as exc:
             job["status"] = queue.fail(self.conn, job, mask(str(exc)), retry=False)
             self._job_failed(job, str(exc), exc.fix_status)
@@ -325,6 +329,8 @@ class Worker:
         try:
             url = self.github.create_draft_pr(repo["installation_id"], repo["full_name"], branch,
                                               repo["default_branch"], title, body)  # fmt: skip
+        except RateLimited:
+            raise
         except GitHubError as exc:
             raise JobError(str(exc)) from exc
         db.update_fix(self.conn, fix["id"], status="pushed", branch=branch, pr_url=url, error=None)

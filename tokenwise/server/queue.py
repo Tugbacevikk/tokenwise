@@ -106,6 +106,17 @@ def fail(conn, job: dict, error: str, retry: bool = True) -> str:
     return "failed"
 
 
+def defer(conn, job: dict, seconds: int, reason: str) -> None:
+    """Puts the job back to run later without using up one of its attempts (the job did
+    nothing wrong: GitHub asked us to wait)."""
+    conn.execute(
+        "UPDATE jobs SET status = 'queued', locked_by = NULL, locked_at = NULL, error = %s,"
+        " attempts = GREATEST(attempts - 1, 0), run_after = now() + make_interval(secs => %s)"
+        " WHERE id = %s AND status = 'running'",
+        (reason[:4000], seconds, job["id"]),
+    )
+
+
 def counts(conn) -> dict[str, int]:
     rows = conn.execute("SELECT status, COUNT(*) AS n FROM jobs GROUP BY status").fetchall()
     return {r["status"]: r["n"] for r in rows}

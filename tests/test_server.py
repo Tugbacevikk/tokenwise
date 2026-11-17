@@ -756,3 +756,50 @@ def test_metrics_need_their_token(setup, conn, server):
     assert 'tokenwise_jobs{kind="scan",status="done"} 1' in text
     assert "tokenwise_repositories 1" in text and "tokenwise_oldest_queued_job_seconds 0" in text
     assert 'tokenwise_job_seconds_last_hour{kind="sync"}' in text
+
+
+def test_rate_limit_wait_reads_githubs_headers():
+    from tokenwise.server.github import rate_limit_wait
+
+    assert rate_limit_wait(200, {}, "") is None
+    assert rate_limit_wait(403, {}, "Resource not accessible by integration") is None
+    assert rate_limit_wait(403, {"retry-after": "30"}, "") == 30
+    reset = {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "1000"}
+    assert rate_limit_wait(403, reset, "", now=900) == 101
+    assert rate_limit_wait(403, {}, "You have exceeded a secondary rate limit") == 60
+    assert rate_limit_wait(429, {"retry-after": "999999"}, "") == 3600
+
+
+def test_a_rate_limited_job_waits_without_using_an_attempt(setup, conn, gh, monkeypatch):
+    from tokenwise.server.github import RateLimited
+
+    app, worker, _ = setup
+    install(TestClient(app))
+    calls = []
+
+    def limited(*args):
+        calls.append(1)
+        raise RateLimited("GitHub rate limit: retry in 120 s", 120)
+
+    monkeypatch.setattr(gh, "installation_repos", limited)
+    (job,) = drain(worker)
+    row = conn.execute("SELECT * FROM jobs WHERE id = %s", (job["id"],)).fetchone()
+    assert job["status"] == "deferred" and row["status"] == "queued"
+    assert row["attempts"] == 0 and row["run_after"] > db.now()
+    assert len(calls) == 1
+
+
+def test_api_and_sign_in_are_rate_limited(setup):
+    from tokenwise.server.app import RateLimiter
+
+    now = [0.0]
+    limiter = RateLimiter((("/api/", 3),), clock=lambda: now[0])
+    assert [limiter.check("a", "/api/x") for _ in range(4)] == [0, 0, 0, 61]
+    assert limiter.check("b", "/api/x") == 0  # per client
+    assert limiter.check("a", "/webhooks/github") == 0  # not limited
+    now[0] = 61
+    assert limiter.check("a", "/api/x") == 0  # the window moved on
+    app, _, _ = setup
+    client = TestClient(app)
+    codes = [client.get("/auth/login", follow_redirects=False).status_code for _ in range(21)]
+    assert codes[:20] == [307] * 20 and codes[20] == 429

@@ -28,6 +28,34 @@ class GitHubError(Exception):
     pass
 
 
+class RateLimited(GitHubError):
+    """GitHub asked us to slow down; `wait` is how many seconds it wants."""
+
+    def __init__(self, message: str, wait: int) -> None:
+        super().__init__(message)
+        self.wait = wait
+
+
+MAX_WAIT = 3600
+
+
+def rate_limit_wait(status: int, headers, text: str, now: float | None = None) -> int | None:
+    """Seconds to wait if this response is GitHub's primary or secondary rate limit."""
+    if status not in (403, 429):
+        return None
+    now = time.time() if now is None else now
+    retry_after = headers.get("retry-after")
+    if retry_after and retry_after.isdigit():
+        return min(MAX_WAIT, max(1, int(retry_after)))
+    if headers.get("x-ratelimit-remaining") == "0":
+        reset = headers.get("x-ratelimit-reset", "")
+        wait = int(reset) - int(now) if reset.isdigit() else 60
+        return min(MAX_WAIT, max(1, wait + 1))
+    if status == 429 or "secondary rate limit" in text.lower():
+        return 60
+    return None
+
+
 def mask(text: str) -> str:
     """Removes anything that looks like a GitHub token from a message."""
     return _BASIC.sub(r"\1***", _TOKEN.sub("***", text or ""))
@@ -151,6 +179,9 @@ class GitHubApp:
         return data["token"]
 
     def _json(self, response: httpx.Response):
+        wait = rate_limit_wait(response.status_code, response.headers, response.text)
+        if wait is not None:
+            raise RateLimited(f"GitHub rate limit: retry in {wait} s", wait)
         if response.status_code >= 400:
             raise GitHubError(mask(f"GitHub {response.status_code}: {response.text[:300]}"))
         return response.json() if response.content else {}
