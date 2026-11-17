@@ -119,39 +119,80 @@ def _text(node) -> str:
     return node.text.decode("utf-8", errors="replace") if node is not None else ""
 
 
-def _js_definitions(path: str, source: str) -> list[Definition]:
+def _js_units(path: str, source: str) -> list[tuple[Definition, object]]:
+    """Every named function, method and function-valued variable, with its syntax node."""
     tree = _js_tree(path, source)
     if tree is None:
         return []
-    found = []
+    found: list[tuple[Definition, object]] = []
 
     def visit(node, prefix: str) -> None:
         for child in node.children:
             kind = child.type
             name_node = child.child_by_field_name("name")
-            if kind in ("class_declaration", "class") and name_node is not None:
+            if kind in ("class_declaration", "class", "abstract_class_declaration") and (
+                name_node is not None
+            ):
                 visit(child, prefix + _text(name_node) + ".")
                 continue
-            simple = ""
+            simple, body = "", child
             if kind in ("function_declaration", "generator_function_declaration",
                         "method_definition"):  # fmt: skip
                 simple = _text(name_node)
             elif kind == "variable_declarator":
                 value = child.child_by_field_name("value")
-                if value is not None and value.type in (
-                    "arrow_function", "function_expression", "function"
-                ):  # fmt: skip
-                    simple = _text(name_node)
+                if value is not None and value.type in _JS_FUNCTIONS:
+                    simple, body = _text(name_node), value
             if simple:
                 name = prefix + simple
                 start, end = child.start_point[0] + 1, child.end_point[0] + 1
-                found.append(Definition(start, end, name, simple))
+                found.append((Definition(start, end, name, simple), body))
                 visit(child, name + ".")
             else:
                 visit(child, prefix)
 
     visit(tree.root_node, "")
     return found
+
+
+_JS_FUNCTIONS = ("arrow_function", "function_expression", "function", "generator_function")
+_JS_BRANCHES = {
+    "if_statement", "for_statement", "for_in_statement", "while_statement", "do_statement",
+    "catch_clause", "ternary_expression", "switch_case",
+}  # fmt: skip
+_JS_LOGIC = {"&&", "||", "??"}
+
+
+def js_complexity(node, units: set[tuple[int, int]]) -> int:
+    """McCabe-style count like the Python one: 1 + one per branch point. Named functions
+    inside are counted on their own; anonymous callbacks count toward the enclosing one."""
+    count = 1
+    stack = list(node.children)
+    while stack:
+        child = stack.pop()
+        if (child.start_byte, child.end_byte) in units:
+            continue
+        if child.type in _JS_BRANCHES:
+            count += 1
+        elif child.type == "binary_expression":
+            operator = child.child_by_field_name("operator")
+            if operator is not None and operator.type in _JS_LOGIC:
+                count += 1
+        stack.extend(child.children)
+    return count
+
+
+def js_function_sizes(path: str, source: str) -> list[tuple[Definition, int]]:
+    """(definition, complexity) for every named JS/TS function; empty without Tree-sitter."""
+    found = _js_units(path, source)
+    units = {(body.start_byte, body.end_byte) for _, body in found}
+    units |= {(b.parent.start_byte, b.parent.end_byte) for _, b in found if b.parent is not None
+              and b.parent.type == "variable_declarator"}  # fmt: skip
+    return [(d, js_complexity(body, units)) for d, body in found]
+
+
+def _js_definitions(path: str, source: str) -> list[Definition]:
+    return [d for d, _ in _js_units(path, source)]
 
 
 def _js_calls(path: str, source: str) -> list[tuple[str, int]]:

@@ -82,6 +82,27 @@ AUC 0,5 yazı-tura demektir, 1 ise mükemmel ayırmadır.
 - **FastAPI'de kritiklik sinyali ters (0,28).** Çok dosyanın içe aktardığı çekirdek dosyalar burada daha dikkatli değiştiriliyor.
 - **Varsayılan ağırlıklar değiştirilmedi.** Her depo için ağırlıklar diğer 9 depodan öğrenilip o depoda denendi (leave-one-out). Ortalama AUC 0,682'den yalnızca 0,686'ya çıktı ve 10 depodan 6'sında iyileşme oldu. Bu fark, varsayılanları değiştirmeye yetmiyor. Bir proje kendi geçmişine göre `tokenwise calibrate --save` ile ayar yapabilir.
 
+## JS/TS ekleri: karmaşıklık ve paket adıyla import
+
+İlk ölçümde JS/TS depolarında karmaşıklık sinyali yazı-tura düzeyindeydi (0,50), çünkü karmaşıklık yalnızca Python için hesaplanıyordu. Bu bölümdeki ölçümler, iki eklemeden sonra iki TypeScript deposu daha katılarak yapıldı:
+
+- **JS/TS fonksiyonlarında karmaşıklık ve uzunluk:** Tree-sitter ile hesaplanıyor. Python'daki kuralların aynısı uygulanıyor; dallar, `&&`, `||` ve `??` sayılıyor. İsimli iç fonksiyonlar ayrı birim sayılıyor; isimsiz geri çağırmalar (callback) içinde bulundukları fonksiyona ekleniyor.
+- **Paket adıyla yapılan importlar:** `import { z } from "zod/v4"` gibi importlar, `package.json` dosyasındaki `name` ve `exports` alanlarından çözülerek projenin kendi kaynak dosyasına bağlanıyor. Zod'da `v3/types.ts` dosyası artık "test yok" uyarısı almıyor.
+- **Testten sayılan dosyalar:** `fixtures`, `__mocks__` klasörleri ve `test-*.ts` adlı dosyalar artık test sayılıyor.
+
+| Depo | Commit | Kaynak dosya | Bulgu | Sorunlu / 200 | Karmaşıklık AUC (önce → sonra) | Skor AUC (önce → sonra) |
+| --- | --- | ---: | ---: | ---: | --- | --- |
+| colinhacks/zod | 90bf57b8 | 514 | 233 | 103 | 0,50 → 0,77 | 0,80 → 0,81 |
+| sindresorhus/got | 6b5aafc | 98 | 61 | 166 | 0,50 → 0,83 | 0,87 → 0,89 |
+| axios/axios | c0d4c900 | 260 | 44 | 100 | 0,50 → 0,64 | 0,69 → 0,66 |
+| expressjs/express | 43fca52d | 142 | 3 | 43 | 0,50 → 0,54 | 0,67 → 0,67 |
+
+- **12 deponun ortalaması:** risk skoru AUC 0,71, karmaşıklık 0,69, test eksikliği 0,47.
+- **Ağırlık denemesi:** Leave-one-out yöntemiyle öğrenilen ağırlıklar 0,708'i 0,715'e çıkardı ve 12 depodan 8'inde iyileşme oldu. Bu küçük fark nedeniyle varsayılanlar yine değiştirilmedi.
+- **axios'ta skorun düşmesi:** Skor 0,69'dan 0,66'ya indi. Paket adıyla çözülen importlar test eksikliği sinyalini 0,53'ten 0,43'e indirdi. Bu sinyal 12 deponun hiçbirinde işe yaramıyor (bkz. yukarıdaki not).
+- **got'ta etiket doygunluğu:** got'ta 200 commit'in 166'sı "sorunlu" çıktı. Bu depoda düzeltme commit'leri çok sık. Bu kadar yüksek bir sorunlu oranında AUC'ye temkinli bakılmalı.
+- **Elle doğrulama:** axios'taki `assertParamsAcyclic` fonksiyonunun 16 olan karmaşıklık değeri satır satır sayılarak doğrulandı. Zod'da kalan 7 "test yok" bulgusunun 5'i, testlere ancak üç ya da daha fazla ara modül üzerinden ulaşan dosyalar.
+
 ## Tekrar üretmek
 
 ```bash

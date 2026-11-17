@@ -277,3 +277,27 @@ def test_typescript_functions_methods_and_arrows(tmp_path):
     assert item["function"] == "add"
     assert item["callers"] == ["src/calc.ts:Calc.sum", "src/math.ts:twice"]
     assert item["tests"] == ["src/math.test.ts:<module>"]
+
+
+@pytest.mark.skipif(not tree_sitter_available(), reason="tree-sitter not installed")
+def test_js_and_ts_functions_get_complexity_and_length_findings(tmp_path):
+    from tokenwise.analyzers import analyze, js_findings
+    from tokenwise.callgraph import js_function_sizes
+
+    branches = "".join(f"  if (a === {i} && b) {{ return {i} }}\n" for i in range(12))
+    source = (
+        f"export function decide(a, b) {{\n{branches}  return items.map(x => x ? 1 : 2)\n}}\n"
+        "class Box {\n  open(x) {\n    return x ?? 0\n  }\n}\n"
+        "const long = () => {\n" + "  step()\n" * 90 + "}\n"
+    )
+    sizes = {d.name: score for d, score in js_function_sizes("a.ts", source)}
+    assert sizes == {"decide": 1 + 24 + 1, "Box.open": 2, "long": 1}
+    found = {(f.rule, f.key) for f in js_findings("src/a.ts", source)}
+    assert found == {("high-complexity", "decide"), ("long-function", "long")}
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.ts").write_text(source, "utf-8")
+    (tmp_path / "src" / "types.d.ts").write_text(source, "utf-8")  # declarations: skipped
+    rules = {(f.rule, f.file) for f in analyze(Settings(root=tmp_path),
+                                               build_graph(Settings(root=tmp_path)))}  # fmt: skip
+    assert ("high-complexity", "src/a.ts") in rules
+    assert not any(file == "src/types.d.ts" for _, file in rules)

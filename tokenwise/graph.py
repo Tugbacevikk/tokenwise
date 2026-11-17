@@ -10,7 +10,7 @@ import sys
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from .config import Settings
 from .repo_map import is_test_file, list_source_files
@@ -232,9 +232,78 @@ def _is_type_checking(test: ast.AST) -> bool:
     )
 
 
-def _resolve_js(path: str, spec: str, files: set[str]) -> str | None:
+def _js_packages(root, files: set[str], ignore_dirs) -> dict[str, str]:
+    """The project's own packages as import names: "zod/v4" -> "packages/zod/src/v4/index.ts".
+    Read from each package.json's name, exports (any condition that points at a source file)
+    and main/module/source fields. Tests usually import a package by its name, not by path."""
+    import json
+    import os
+
+    found: dict[str, str] = {}
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in ignore_dirs and d != "node_modules"]
+        if "package.json" not in filenames:
+            continue
+        try:
+            data = json.loads(Path(dirpath, "package.json").read_text("utf-8"))
+        except (OSError, ValueError):
+            continue
+        name = data.get("name") if isinstance(data, dict) else None
+        if not isinstance(name, str) or not name:
+            continue
+        base = Path(dirpath).relative_to(root).as_posix()
+        base = "" if base == "." else base + "/"
+        exports = data.get("exports")
+        if isinstance(exports, (str, dict)) and not (
+            isinstance(exports, dict) and any(k.startswith(".") for k in exports)
+        ):
+            exports = {".": exports}
+        entries = dict(exports) if isinstance(exports, dict) else {}
+        entries.setdefault(".", [data.get(k) for k in ("source", "module", "main")])
+        for sub, target in entries.items():
+            spec = name if sub == "." else f"{name}/{sub.removeprefix('./')}"
+            for candidate in _targets(target):
+                path = _js_file(base + candidate.removeprefix("./"), files)
+                if path:
+                    found.setdefault(spec, path)
+                    break
+        found.setdefault(f"{name}/*", base)  # name/sub -> try <dir>/src/sub, <dir>/sub
+    return found
+
+
+def _targets(value) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [t for v in value for t in _targets(v)]
+    if isinstance(value, dict):
+        return [t for v in value.values() for t in _targets(v)]
+    return []
+
+
+def _js_file(base: str, files: set[str]) -> str | None:
+    stem = str(PurePosixPath(base).with_suffix("")) if PurePosixPath(base).suffix else base
+    candidates = [base, *(stem + ext for ext in _JS_EXT), *(f"{base}/index{e}" for e in _JS_EXT)]
+    return next((c for c in candidates if c in files), None)
+
+
+def _resolve_package(spec: str, packages: dict[str, str], files: set[str]) -> str | None:
+    if spec in packages:
+        return packages[spec]
+    for key, base in packages.items():
+        if key.endswith("/*") and spec.startswith(key[:-1]):
+            rest = spec[len(key) - 1 :]
+            for folder in ("src/", "lib/", "source/", ""):
+                path = _js_file(f"{base}{folder}{rest}", files)
+                if path:
+                    return path
+    return None
+
+
+def _resolve_js(path: str, spec: str, files: set[str],
+                packages: dict[str, str] | None = None) -> str | None:  # fmt: skip
     if not spec.startswith("."):
-        return None
+        return _resolve_package(spec, packages, files) if packages else None
     target = PurePosixPath(path).parent.joinpath(spec)
     parts: list[str] = []
     for part in target.parts:
@@ -265,6 +334,10 @@ def build_graph(
     read = read or (lambda path: read_source(settings.root / path))
     graph = Graph(files=files)
     file_set = set(files)
+    packages = (
+        _js_packages(settings.root, file_set, settings.ignore_dirs)
+        if any(f.endswith(_JS_EXT) for f in files) else {}
+    )  # fmt: skip
     modules: dict[str, str] = {}
     rooted: dict[str, str] = {}  # names counted from the project root (or its src/ folder)
     for path in files:
@@ -290,7 +363,7 @@ def build_graph(
                     graph.add(path, target, runtime)
         elif path.endswith(_JS_EXT):
             for match in _JS_IMPORT.finditer(source):
-                target = _resolve_js(path, match.group(1), file_set)
+                target = _resolve_js(path, match.group(1), file_set, packages)
                 if target:
                     text = match.group(0)
                     lazy = text.startswith(("import(", "import (")) or re.match(

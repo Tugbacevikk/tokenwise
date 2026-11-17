@@ -7,6 +7,11 @@ a change that breaks existing use bumps major.
 
 First release.
 
+- JS/TS functions get complexity and length findings (Tree-sitter), and ReleaseGuard's
+  complexity signal now covers them: on 4 JS/TS repositories its AUC went from 0.50 to
+  0.54-0.83. Imports of a project's own packages by name (`"zod/v4"`) are resolved through
+  package.json `name`/`exports`. `fixtures/`, `__mocks__/` and `test-*.ts` count as tests.
+
 - Measured on 10 open-source repositories (docs/measurements.md): findings 1537 -> 394 after
   the fixes below, about 10% false alarms in a hand-checked sample, risk score mean AUC 0.68.
 - Quieter RepoDoctor: docs, examples, scripts and tool config are support code (no test, style
