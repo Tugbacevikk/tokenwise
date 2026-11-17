@@ -100,7 +100,11 @@ def git_fetch(url: str, ref: str, repo: Path, token: str = "") -> None:
 
 
 def git_push(url: str, repo: Path, branch: str, token: str = "") -> None:
-    _git(["push", "-q", url, f"HEAD:refs/heads/{branch}"], repo, token)
+    """Force-pushes to Tokenwise's own branch: a retried job rebuilds the same change on a new
+    commit, and only tokenwise/fix-N branches are ever pushed to."""
+    if not branch.startswith("tokenwise/"):
+        raise GitHubError(f"refusing to push to {branch}")
+    _git(["push", "-q", url, f"+HEAD:refs/heads/{branch}"], repo, token)
 
 
 @dataclass
@@ -172,6 +176,8 @@ class GitHubApp:
     def upsert_comment(self, installation_id: int, full_name: str, number: int, body: str,
                        comment_id: int | None) -> int:  # fmt: skip
         body = f"{COMMENT_MARKER}\n{body}"
+        # no id stored (a job that died after posting): look for our marked comment first
+        comment_id = comment_id or self._marked_comment(installation_id, full_name, number)
         if comment_id:
             try:
                 data = self._call(installation_id, "PATCH",
@@ -184,8 +190,27 @@ class GitHubApp:
                           json={"body": body})  # fmt: skip
         return data["id"]
 
+    def _marked_comment(self, installation_id: int, full_name: str, number: int) -> int | None:
+        for page in range(1, 11):
+            items = self._call(installation_id, "GET",
+                               f"/repos/{full_name}/issues/{number}/comments",
+                               params={"per_page": 100, "page": page})  # fmt: skip
+            for item in items:
+                if (item.get("body") or "").startswith(COMMENT_MARKER) and (
+                    (item.get("user") or {}).get("type") == "Bot"
+                ):
+                    return item["id"]
+            if len(items) < 100:
+                break
+        return None
+
     def create_draft_pr(self, installation_id: int, full_name: str, head: str, base: str,
                         title: str, body: str) -> str:  # fmt: skip
+        owner = full_name.split("/", 1)[0]
+        existing = self._call(installation_id, "GET", f"/repos/{full_name}/pulls",
+                              params={"head": f"{owner}:{head}", "state": "open"})  # fmt: skip
+        if existing:  # a retried job: the PR was opened before the job could record it
+            return existing[0]["html_url"]
         data = self._call(installation_id, "POST", f"/repos/{full_name}/pulls",
                           json={"title": title, "head": head, "base": base, "body": body,
                                 "draft": True})  # fmt: skip

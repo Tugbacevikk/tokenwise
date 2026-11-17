@@ -100,6 +100,9 @@ class FakeGitHub:
         git_push(self.url(full_name), repo, branch)
 
     def upsert_comment(self, installation_id, full_name, number, body, comment_id):
+        if comment_id is None:  # like GitHubApp: find our marked comment on this PR
+            comment_id = next((cid for cid, c in self.comments.items()
+                               if c["number"] == number), None)  # fmt: skip
         if comment_id in self.comments:
             self.comments[comment_id]["body"] = COMMENT_MARKER + "\n" + body
             self.comments[comment_id]["edits"] += 1
@@ -110,6 +113,9 @@ class FakeGitHub:
         return new_id
 
     def create_draft_pr(self, installation_id, full_name, head, base, title, body):
+        for n, pr in enumerate(self.prs):
+            if pr["head"] == head:
+                return f"https://github.com/{full_name}/pull/{101 + n}"
         self.prs.append({"head": head, "base": base, "title": title, "body": body, "draft": True})
         return f"https://github.com/{full_name}/pull/{100 + len(self.prs)}"
 
@@ -226,7 +232,9 @@ def install(client: TestClient) -> None:
 
 def test_migrate_twice_is_harmless(conn):
     db.migrate(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchall() == [{"version": 1}]
+    assert conn.execute("SELECT version FROM schema_version").fetchall() == [
+        {"version": db.SCHEMA_VERSION}
+    ]
 
 
 def test_signature_and_masking():
@@ -299,9 +307,11 @@ def test_queue_dedupe_retry_and_stale_jobs(conn):
     assert queue.fail(conn, {**job, "attempts": queue.MAX_ATTEMPTS}, "boom") == "failed"
 
     stuck = queue.enqueue(conn, "x", {})
-    conn.execute("UPDATE jobs SET status = 'running', locked_at = now() - interval '2 hours'"
-                 " WHERE id = %s", (stuck,))  # fmt: skip
-    assert queue.claim(conn, "w2")["id"] == stuck
+    conn.execute("UPDATE jobs SET status = 'running', locked_by = 'gone',"
+                 " locked_at = now() - interval '2 hours' WHERE id = %s", (stuck,))  # fmt: skip
+    assert queue.claim(conn, "w2") is None  # back in the queue, after a retry delay
+    row = conn.execute("SELECT * FROM jobs WHERE id = %s", (stuck,)).fetchone()
+    assert row["status"] == "queued" and "gone stopped answering" in row["error"]
 
 
 def test_bad_signature_and_unknown_installation(setup):
@@ -468,7 +478,7 @@ def test_fix_push_refuses_a_proposal_for_other_content(setup, gh, conn):
     drain(worker)
     repo = conn.execute("SELECT * FROM repositories").fetchone()
     finding = conn.execute("SELECT * FROM findings WHERE rule = 'shell-command'").fetchone()
-    fix = db.create_fix(conn, repo["id"], finding["id"], ALICE["id"])
+    fix, _ = db.create_fix(conn, repo["id"], finding["id"], ALICE["id"])
     head = git(gh.repos["acme/app"]["bare"], "rev-parse", "main")
     db.update_fix(conn, fix["id"], status="approved", base_sha=head,
                   changes=[{"path": "app/tasks.py", "old": "not this", "new": "x"}])  # fmt: skip
@@ -476,7 +486,7 @@ def test_fix_push_refuses_a_proposal_for_other_content(setup, gh, conn):
     (job,) = drain(worker)
     assert job["status"] == "failed"
     row = db.fix(conn, fix["id"])
-    assert row["status"] == "failed" and "not what the proposal" in row["error"]
+    assert row["status"] == "stale" and "değişti" in row["error"]
     assert gh.prs == []
     db.update_fix(conn, fix["id"], status="approved",
                   changes=[{"path": "../outside.py", "old": None, "new": "x"}])  # fmt: skip
@@ -529,3 +539,184 @@ def test_doctor_reports_each_part(conn, server):
     assert not check_github_app(server, FakeApp(error=RuntimeError("401"))).ok
     server.github = {}
     assert "eksik" in check_github_app(server).detail
+
+
+# ---------------------------------------------------------------- repeats, order, concurrency
+
+
+def send_as(client, event, payload, delivery):
+    body, signature = signed(payload)
+    return client.post("/webhooks/github", content=body,
+                       headers={"X-GitHub-Event": event, "X-Hub-Signature-256": signature,
+                                "X-GitHub-Delivery": delivery})  # fmt: skip
+
+
+def jobs(conn, kind=None):
+    rows = conn.execute("SELECT * FROM jobs ORDER BY id").fetchall()
+    return [r for r in rows if kind is None or r["kind"] == kind]
+
+
+def pr_payload(sha, updated, action="synchronize"):
+    return {"action": action, "installation": {"id": INSTALLATION},
+            "repository": {"id": 555, "full_name": "acme/app", "default_branch": "main"},
+            "pull_request": {"number": 7, "state": "open", "head": {"sha": sha},
+                             "base": {"ref": "main"}, "updated_at": updated}}  # fmt: skip
+
+
+def test_a_redelivered_webhook_runs_once_and_a_failed_one_runs_again(setup, conn, monkeypatch):
+    app, _, _ = setup
+    client = TestClient(app)
+    install(client)
+    push = {"ref": "refs/heads/main", "after": "a" * 40, "installation": {"id": INSTALLATION},
+            "repository": {"id": 555, "full_name": "acme/app", "default_branch": "main",
+                           "pushed_at": 1763380000}}  # fmt: skip
+    first = send_as(client, "push", push, "d-1").json()
+    again = send_as(client, "push", push, "d-1").json()
+    assert "job" in first and again == {"duplicate": "d-1"}
+    assert conn.execute("SELECT COUNT(*) AS n FROM webhook_deliveries").fetchone()["n"] == 1
+
+    import tokenwise.server.app as app_module
+
+    real = app_module.handle_event
+
+    def broken(*args):
+        raise RuntimeError("database hiccup")
+
+    monkeypatch.setattr(app_module, "handle_event", broken)
+    with pytest.raises(RuntimeError):
+        send_as(client, "push", push, "d-2")
+    monkeypatch.setattr(app_module, "handle_event", real)
+    assert "job" in send_as(client, "push", push, "d-2").json()  # not marked as seen
+
+
+def test_a_late_older_event_never_replaces_a_newer_one(setup, conn, gh):
+    app, worker, _ = setup
+    client = TestClient(app)
+    install(client)
+    drain(worker)
+    work = gh.repos["acme/app"]["work"]
+    git(work, "checkout", "-q", "-b", "feature")
+    shas = []
+    for n in range(2):
+        (work / "app" / "tasks.py").write_text(SHELL_CODE + f"\nN = {n}\n", "utf-8")
+        git(work, "commit", "-qam", f"n{n}")
+        shas.append(git(work, "rev-parse", "HEAD"))
+    git(work, "push", "-q", str(gh.repos["acme/app"]["bare"]), "feature")
+    send_as(client, "pull_request", pr_payload(shas[1], "2026-11-17T10:05:00Z"), "p-new")
+    send_as(client, "pull_request", pr_payload(shas[0], "2026-11-17T10:00:00Z", "opened"), "p-old")
+    (queued,) = jobs(conn, "pr_risk")
+    assert queued["payload"]["head_sha"] == shas[1]  # the newer input stayed
+    drain(worker)
+    # the old event's job arrives only now (a slow redelivery): it is skipped, not reported
+    queue.enqueue(conn, "pr_risk", {**queued["payload"], "head_sha": shas[0],
+                                    "event_at": "2026-11-17T10:00:00Z"},
+                  dedupe_key=queued["dedupe_key"])  # fmt: skip
+    drain(worker)
+    pr = conn.execute("SELECT head_sha FROM pull_requests").fetchone()
+    assert pr["head_sha"] == shas[1] and len(gh.comments) == 1
+
+
+def test_jobs_with_the_same_key_never_run_together(conn):
+    a = queue.enqueue(conn, "pr_risk", {"n": 1}, dedupe_key="pr:1:7")
+    assert queue.claim(conn, "w1")["id"] == a
+    b = queue.enqueue(conn, "pr_risk", {"n": 2}, dedupe_key="pr:1:7")
+    c = queue.enqueue(conn, "scan", {"n": 3}, dedupe_key="scan:1")
+    assert queue.claim(conn, "w2")["id"] == c  # b waits for a
+    assert queue.claim(conn, "w3") is None
+    assert queue.finish(conn, a, "someone-else") is False  # only the holder finishes it
+    assert queue.finish(conn, a, "w1") is True
+    assert queue.claim(conn, "w3")["id"] == b
+
+
+def test_heartbeat_keeps_a_long_job_alive(conn):
+    import time
+
+    from tokenwise.server.worker import Heartbeat
+
+    job_id = queue.enqueue(conn, "scan", {})
+    queue.claim(conn, "w1")
+    conn.execute("UPDATE jobs SET locked_at = now() - interval '9 minutes' WHERE id = %s",
+                 (job_id,))  # fmt: skip
+    with Heartbeat(lambda: db.connect(DATABASE_URL), job_id, "w1", every=0.05):
+        time.sleep(0.3)
+    row = conn.execute("SELECT locked_at > now() - interval '1 minute' AS fresh FROM jobs"
+                       " WHERE id = %s", (job_id,)).fetchone()  # fmt: skip
+    assert row["fresh"]
+
+
+def test_two_clicks_ask_for_one_fix_and_a_retried_push_opens_one_pr(setup, conn, gh):
+    app, worker, model = setup
+    install(TestClient(app))
+    drain(worker)
+    alice = login(app, ALICE)
+    org_id = alice.get("/api/me").json()["orgs"][0]["id"]
+    alice.put(f"/api/orgs/{org_id}/model", json={"api_key": "k", "models": ["m"]})
+    repo = conn.execute("SELECT id FROM repositories").fetchone()["id"]
+    shell = next(f for f in alice.get(f"/api/repos/{repo}/findings").json()
+                 if f["rule"] == "shell-command")  # fmt: skip
+    url = f"/api/repos/{repo}/findings/{shell['id']}/fix"
+    first, second = alice.post(url).json(), alice.post(url).json()
+    assert first["id"] == second["id"] and len(jobs(conn, "fix_propose")) == 1
+    drain(worker)
+    alice.post(f"/api/fixes/{first['id']}/approve")
+    drain(worker)
+    # the worker died after opening the PR but before recording it: the job runs again
+    conn.execute("UPDATE fixes SET status = 'approved', pr_url = NULL WHERE id = %s",
+                 (first["id"],))  # fmt: skip
+    queue.enqueue(conn, "fix_push", {"fix_id": first["id"]})
+    (job,) = drain(worker)
+    assert job["status"] == "done"
+    assert len(gh.prs) == 1 and db.fix(conn, first["id"])["pr_url"].endswith("/101")
+
+
+def test_approval_after_the_branch_moved_is_refused(setup, conn, gh):
+    app, worker, _ = setup
+    install(TestClient(app))
+    drain(worker)
+    alice = login(app, ALICE)
+    org_id = alice.get("/api/me").json()["orgs"][0]["id"]
+    alice.put(f"/api/orgs/{org_id}/model", json={"api_key": "k", "models": ["m"]})
+    repo = conn.execute("SELECT id FROM repositories").fetchone()["id"]
+    shell = next(f for f in alice.get(f"/api/repos/{repo}/findings").json()
+                 if f["rule"] == "shell-command")  # fmt: skip
+    fix = alice.post(f"/api/repos/{repo}/findings/{shell['id']}/fix").json()
+    drain(worker)
+    work = gh.repos["acme/app"]["work"]  # someone edits the file on main meanwhile
+    (work / "app" / "tasks.py").write_text(SHELL_CODE.replace("cmd", "command"), "utf-8")
+    git(work, "commit", "-qam", "rename")
+    git(work, "push", "-q", str(gh.repos["acme/app"]["bare"]), "main")
+    alice.post(f"/api/fixes/{fix['id']}/approve")
+    (job,) = drain(worker)
+    row = db.fix(conn, fix["id"])
+    assert job["status"] == "failed" and row["status"] == "stale" and gh.prs == []
+    assert "Yeni bir öneri isteyin" in row["error"]
+    again = alice.post(f"/api/repos/{repo}/findings/{shell['id']}/fix").json()
+    assert again["id"] != fix["id"]  # a stale fix does not block a new one
+
+
+def test_removed_installation_stays_removed_and_mid_job_removal_is_safe(setup, conn, gh,
+                                                                       monkeypatch):  # fmt: skip
+    app, worker, _ = setup
+    client = TestClient(app)
+    install(client)
+    real_clone = gh.clone
+
+    def clone_then_uninstall(*args):
+        sha = real_clone(*args)
+        send(
+            client,
+            "installation",
+            {"action": "deleted", "installation": {"id": INSTALLATION, "account": ACCOUNT}},
+        )
+        return sha
+
+    drain(worker)  # sync + first scan
+    monkeypatch.setattr(gh, "clone", clone_then_uninstall)
+    alice = login(app, ALICE)
+    repo = conn.execute("SELECT id FROM repositories").fetchone()["id"]
+    alice.post(f"/api/repos/{repo}/scan")
+    drain(worker)  # the scan finds its repository gone; nothing is left behind
+    for table in ("organizations", "repositories", "findings", "scans", "jobs"):
+        assert conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"] == 0, table
+    install(client)  # a late redelivery of "created" for the removed installation
+    assert conn.execute("SELECT COUNT(*) AS n FROM organizations").fetchone()["n"] == 0

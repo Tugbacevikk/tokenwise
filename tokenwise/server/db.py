@@ -19,7 +19,7 @@ from psycopg.types.json import Jsonb
 from ..analyzers import Finding
 from ..health import scores_for, source_of
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -172,6 +172,24 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS jobs_ready ON jobs (status, run_after);
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_dedupe ON jobs (dedupe_key)
     WHERE status = 'queued' AND dedupe_key IS NOT NULL;
+
+-- version 2: idempotent webhooks, event order, heartbeats, one open fix per finding
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+    delivery_id TEXT PRIMARY KEY,  -- GitHub's X-GitHub-Delivery
+    event TEXT NOT NULL,
+    received_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS webhook_deliveries_age ON webhook_deliveries (received_at);
+-- GitHub never reuses an installation id: a late "created" for a removed one is ignored
+CREATE TABLE IF NOT EXISTS removed_installations (
+    installation_id BIGINT PRIMARY KEY,
+    removed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;
+ALTER TABLE repositories ADD COLUMN IF NOT EXISTS last_event_at TEXT;
+ALTER TABLE pull_requests ADD COLUMN IF NOT EXISTS event_at TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS fixes_one_open ON fixes (finding_id)
+    WHERE status IN ('queued', 'proposed', 'approved');
 """
 
 
@@ -186,6 +204,8 @@ def migrate(conn: psycopg.Connection) -> None:
         row = conn.execute("SELECT version FROM schema_version").fetchone()
         if row is None:
             conn.execute("INSERT INTO schema_version VALUES (%s)", (SCHEMA_VERSION,))
+        elif row["version"] < SCHEMA_VERSION:  # every change above is written to re-run safely
+            conn.execute("UPDATE schema_version SET version = %s", (SCHEMA_VERSION,))
 
 
 @contextmanager
@@ -240,8 +260,21 @@ def org_by_installation(conn, installation_id: int) -> dict | None:
 
 
 def delete_org(conn, installation_id: int) -> bool:
+    conn.execute(
+        "INSERT INTO removed_installations (installation_id) VALUES (%s) ON CONFLICT DO NOTHING",
+        (installation_id,),
+    )
     done = conn.execute("DELETE FROM organizations WHERE installation_id = %s", (installation_id,))
     return done.rowcount > 0
+
+
+def installation_removed(conn, installation_id: int) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM removed_installations WHERE installation_id = %s", (installation_id,)
+        ).fetchone()
+        is not None
+    )
 
 
 def role_in(conn, user_id: int, org_id: int) -> str | None:
@@ -356,11 +389,12 @@ def record_scan(
         ).fetchall()
         for row in stale:
             if source_of(row["rule"]) in sources:
-                conn.execute(
-                    "UPDATE findings SET status = 'resolved', resolved_at = %s WHERE id = %s",
+                done = conn.execute(  # a person may have ignored it in the meantime
+                    "UPDATE findings SET status = 'resolved', resolved_at = %s"
+                    " WHERE id = %s AND status = 'open'",
                     (ts, row["id"]),
                 )
-                resolved += 1
+                resolved += done.rowcount
         open_rows = conn.execute(
             "SELECT category, severity FROM findings WHERE repository_id = %s AND status = 'open'",
             (repo_id,),
@@ -418,18 +452,20 @@ def snapshots(conn, repo_id: int, limit: int = 30) -> list[dict]:
 # ---------------------------------------------------------------- pull requests and fixes
 
 
-def save_pr(conn, repo_id: int, number: int, head_sha: str, report: dict) -> dict | None:
+def save_pr(conn, repo_id: int, number: int, head_sha: str, report: dict,
+            event_at: str | None = None) -> dict | None:  # fmt: skip
     """Stores the report; returns the earlier row (with its comment id) if there was one."""
     old = conn.execute(
         "SELECT * FROM pull_requests WHERE repository_id = %s AND number = %s",
         (repo_id, number),
     ).fetchone()
     conn.execute(
-        "INSERT INTO pull_requests (repository_id, number, head_sha, score, level, report)"
-        " VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (repository_id, number) DO UPDATE SET"
-        " head_sha = EXCLUDED.head_sha, score = EXCLUDED.score, level = EXCLUDED.level,"
-        " report = EXCLUDED.report, updated_at = now()",
-        (repo_id, number, head_sha, report["score"], report["level"], Jsonb(report)),
+        "INSERT INTO pull_requests (repository_id, number, head_sha, score, level, report,"
+        " event_at) VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (repository_id, number)"
+        " DO UPDATE SET head_sha = EXCLUDED.head_sha, score = EXCLUDED.score,"
+        " level = EXCLUDED.level, report = EXCLUDED.report, updated_at = now(),"
+        " event_at = GREATEST(pull_requests.event_at, EXCLUDED.event_at)",
+        (repo_id, number, head_sha, report["score"], report["level"], Jsonb(report), event_at),
     )
     return old
 
@@ -449,12 +485,22 @@ def pull_requests(conn, repo_id: int) -> list[dict]:
     ).fetchall()
 
 
-def create_fix(conn, repo_id: int, finding_id: int, user_id: int) -> dict:
-    return conn.execute(
+def create_fix(conn, repo_id: int, finding_id: int, user_id: int) -> tuple[dict, bool]:
+    """A new fix, or the finding's fix that is still open (two clicks ask the model once).
+    Returns (fix, created)."""
+    row = conn.execute(
         "INSERT INTO fixes (repository_id, finding_id, requested_by) VALUES (%s, %s, %s)"
-        " RETURNING *",
+        " ON CONFLICT (finding_id) WHERE status IN ('queued', 'proposed', 'approved')"
+        " DO NOTHING RETURNING *",
         (repo_id, finding_id, user_id),
     ).fetchone()
+    if row is not None:
+        return row, True
+    return conn.execute(
+        "SELECT * FROM fixes WHERE finding_id = %s AND status IN ('queued', 'proposed',"
+        " 'approved')",
+        (finding_id,),
+    ).fetchone(), False
 
 
 def fix(conn, fix_id: int) -> dict | None:
@@ -510,6 +556,23 @@ def usage(conn, org_id: int, days: int = 30) -> dict:
         (org_id, days),
     ).fetchone()
     return dict(row)
+
+
+def first_delivery(conn, delivery_id: str, event: str) -> bool:
+    """Records a webhook delivery; False if GitHub already sent this one (a redelivery)."""
+    row = conn.execute(
+        "INSERT INTO webhook_deliveries (delivery_id, event) VALUES (%s, %s)"
+        " ON CONFLICT (delivery_id) DO NOTHING RETURNING delivery_id",
+        (delivery_id, event),
+    ).fetchone()
+    return row is not None
+
+
+def prune_deliveries(conn, days: int = 30) -> int:
+    return conn.execute(
+        "DELETE FROM webhook_deliveries WHERE received_at < now() - make_interval(days => %s)",
+        (days,),
+    ).rowcount
 
 
 def to_json(value) -> str:

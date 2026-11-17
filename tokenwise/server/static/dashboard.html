@@ -188,7 +188,7 @@ async function renderFindings(status = "open") {
 }
 
 const FIX_STATUS = { queued: "Hazırlanıyor", proposed: "Onay bekliyor", approved: "Push ediliyor", pushed: "Taslak PR açıldı",
-                     failed: "Başarısız", rejected: "Reddedildi" };
+                     failed: "Başarısız", rejected: "Reddedildi", stale: "Güncel değil" };
 
 async function renderFixes() {
   const id = state.repo.repository.id;

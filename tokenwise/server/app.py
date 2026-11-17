@@ -131,11 +131,20 @@ def create_app(
         if not verify_signature(secret, body, request.headers.get("x-hub-signature-256")):
             raise HTTPException(401, "bad signature")
         event = request.headers.get("x-github-event", "")
+        delivery = request.headers.get("x-github-delivery", "")
         try:
             payload = json.loads(body)
         except ValueError as exc:
             raise HTTPException(400, "bad json") from exc
-        return handle_event(conn, event, payload)
+        # The delivery is recorded in the same transaction as its effects: a redelivery of an
+        # event already handled does nothing, and one that failed half way runs again.
+        with conn.transaction():
+            if delivery and not db.first_delivery(conn, delivery, event):
+                return {"duplicate": delivery}
+            result = handle_event(conn, event, payload)
+        if secrets.randbelow(100) == 0:
+            db.prune_deliveries(conn)
+        return result
 
     # ------------------------------------------------------------ sign-in
 
@@ -273,8 +282,10 @@ def create_app(
         if not org or org["model_key"] is None:
             raise HTTPException(400, "Önce organization ayarlarından bir model anahtarı girin.")
         with db.tx(conn):
-            fix = db.create_fix(conn, repo_id, finding_id, user["id"])
-            queue.enqueue(conn, "fix_propose", {"fix_id": fix["id"]}, repo["org_id"])
+            fix, created = db.create_fix(conn, repo_id, finding_id, user["id"])
+            if created:
+                queue.enqueue(conn, "fix_propose", {"fix_id": fix["id"]}, repo["org_id"],
+                              dedupe_key=f"fix:{fix['id']}")  # fmt: skip
         return fix
 
     @app.post("/api/repos/{repo_id}/scan")
@@ -306,7 +317,8 @@ def create_app(
             moved = db.move_fix(conn, fix_id, "proposed", "approved", approved_by=user["id"])
             if moved is None:
                 raise HTTPException(409, f"Bu düzeltme onaylanamaz (durum: {fix['status']}).")
-            queue.enqueue(conn, "fix_push", {"fix_id": fix_id}, repo["org_id"])
+            queue.enqueue(conn, "fix_push", {"fix_id": fix_id}, repo["org_id"],
+                          dedupe_key=f"fix:{fix_id}")  # fmt: skip
         return moved
 
     @app.post("/api/fixes/{fix_id}/reject")
@@ -360,7 +372,8 @@ def handle_event(conn, event: str, payload: dict) -> dict:
         with db.tx(conn):
             repo_id = db.upsert_repo(conn, org["id"], repository["id"], repository["full_name"],
                                      branch)  # fmt: skip
-            job = queue.enqueue(conn, "scan", {"repository_id": repo_id, "ref": payload["after"]},
+            job = queue.enqueue(conn, "scan", {"repository_id": repo_id, "ref": payload["after"],
+                                               "event_at": event_time(repository.get("pushed_at"))},
                                 org["id"], dedupe_key=f"scan:{repo_id}")  # fmt: skip
         return {"job": job}
     if event == "pull_request":
@@ -377,15 +390,32 @@ def handle_event(conn, event: str, payload: dict) -> dict:
             job = queue.enqueue(
                 conn, "pr_risk",
                 {"repository_id": repo_id, "number": pr["number"], "head_sha": pr["head"]["sha"],
-                 "base_ref": pr["base"]["ref"]},
+                 "base_ref": pr["base"]["ref"], "event_at": event_time(pr.get("updated_at"))},
                 org["id"], dedupe_key=f"pr:{repo_id}:{pr['number']}",
             )  # fmt: skip
         return {"job": job}
     return {"ignored": event}
 
 
+def event_time(value) -> str:
+    """GitHub sends times as ISO text or as Unix seconds; one sortable UTC form for both."""
+    from datetime import UTC, datetime
+
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(value, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if isinstance(value, str) and value:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return ""
+        return parsed.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return ""
+
+
 def _install(conn, payload: dict) -> dict:
     inst = payload["installation"]
+    if db.installation_removed(conn, inst["id"]):
+        return {"ignored": "installation was removed"}
     account = inst["account"]
     sender = payload.get("sender") or {}
     with db.tx(conn):
