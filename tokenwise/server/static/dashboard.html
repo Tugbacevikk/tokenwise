@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tokenwise</title>
+<style>
+  :root {
+    --bg: #faf9f6; --panel: #f0eee8; --card: #ffffff; --line: #dcd8cf;
+    --text: #22201c; --muted: #7a766c; --accent: #c15f3c; --accent-soft: #f7e6de;
+    --add: #e6f4ea; --add-text: #1d6b34; --del: #fbe9e7; --del-text: #9b2c1f;
+    --ok: #1d6b34; --warn: #8a5a00; --err: #9b2c1f;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+         background: var(--bg); color: var(--text); display: grid; grid-template-columns: 260px 1fr; }
+  aside { background: var(--panel); border-right: 1px solid var(--line); padding: 16px; display: flex;
+          flex-direction: column; gap: 14px; }
+  aside h1 { font-size: 17px; margin: 0; }
+  aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0; }
+  main { padding: 24px 32px; max-width: 1100px; width: 100%; }
+  select, input { font: inherit; font-size: 14px; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line);
+                  background: #fff; color: var(--text); width: 100%; }
+  button { font: inherit; font-size: 13px; padding: 5px 12px; border-radius: 8px; border: 1px solid var(--line);
+           background: #fff; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  .repo { display: flex; justify-content: space-between; gap: 8px; padding: 6px 8px; border-radius: 8px;
+          cursor: pointer; font-size: 14px; }
+  .repo:hover, .repo.active { background: var(--card); }
+  .muted { color: var(--muted); font-size: 13px; }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .err { color: var(--err); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  .card h3 { margin: 0 0 10px; font-size: 15px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th { text-align: left; font-size: 12px; color: var(--muted); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  td { padding: 7px 8px; border-bottom: 1px solid #eeebe4; vertical-align: top; }
+  .sev { font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 10px; }
+  .sev.high { background: var(--del); color: var(--del-text); }
+  .sev.medium { background: #fbf1dc; color: var(--warn); }
+  .sev.low { background: var(--panel); color: var(--muted); }
+  .scores { display: flex; gap: 10px; flex-wrap: wrap; }
+  .score { background: var(--panel); border-radius: 10px; padding: 8px 14px; min-width: 110px; }
+  .score b { display: block; font-size: 22px; }
+  .spark { display: flex; align-items: flex-end; gap: 3px; height: 40px; margin-top: 10px; }
+  .spark div { width: 10px; background: var(--accent); border-radius: 2px 2px 0 0; opacity: .75; }
+  pre.diff { margin: 6px 0 0; padding: 8px 0; background: #fbfaf7; border: 1px solid var(--line); border-radius: 8px;
+             overflow: auto; font: 12.5px/1.5 ui-monospace, Consolas, monospace; max-height: 420px; }
+  pre.diff div { padding: 0 12px; white-space: pre; }
+  pre.diff .add { background: var(--add); color: var(--add-text); }
+  pre.diff .del { background: var(--del); color: var(--del-text); }
+  pre.diff .hunk { color: var(--muted); }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 14px; }
+  .tabs button.active { background: var(--accent-soft); border-color: var(--accent); }
+  #toast { position: fixed; bottom: 18px; right: 18px; background: var(--text); color: #fff; padding: 10px 14px;
+           border-radius: 10px; font-size: 14px; display: none; max-width: 420px; }
+  .empty { text-align: center; padding: 60px 20px; }
+  label { font-size: 13px; color: var(--muted); display: block; margin: 8px 0 3px; }
+</style>
+</head>
+<body>
+<aside>
+  <h1>Tokenwise</h1>
+  <div id="who" class="muted"></div>
+  <div id="orgbox" hidden>
+    <h2 lang="en">Organization</h2>
+    <select id="org"></select>
+    <div class="muted" id="role" style="margin-top:4px"></div>
+  </div>
+  <div id="repobox" hidden>
+    <h2>Depolar</h2>
+    <div id="repos"></div>
+  </div>
+  <div id="settingsbox" hidden>
+    <button id="settings-btn" style="width:100%">Model ayarları</button>
+  </div>
+</aside>
+<main id="main"></main>
+<div id="toast"></div>
+<script>
+const state = { me: null, org: null, repo: null, tab: "findings", detail: null };
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+async function api(path, options = {}) {
+  const init = { ...options, headers: { "Content-Type": "application/json", ...(options.headers || {}) } };
+  if (init.method && init.method !== "GET") init.headers["X-Tokenwise"] = "1";
+  const response = await fetch(path, init);
+  if (response.status === 401) { renderLogin(); throw new Error("login"); }
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.detail || response.statusText);
+  return data;
+}
+function toast(text) { const t = $("toast"); t.textContent = text; t.style.display = "block";
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => t.style.display = "none", 4000); }
+
+function renderLogin() {
+  $("main").innerHTML = `<div class="empty"><h2>Tokenwise</h2>
+    <p class="muted">Depolarının sağlığını izle, PR riskini gör, bulguları onaylı taslak PR'larla düzelt.</p>
+    <p><a href="/auth/login"><button class="primary">GitHub ile giriş yap</button></a></p></div>`;
+}
+
+async function boot() {
+  try { state.me = await api("/api/me"); } catch { return; }
+  $("who").textContent = "@" + state.me.user.login;
+  if (!state.me.orgs.length) {
+    $("main").innerHTML = `<div class="empty"><h2>Henüz kurulum yok</h2><p class="muted">Tokenwise GitHub
+      uygulamasını bir hesaba ya da organization'a kurun; sonra bu sayfaya dönün.</p></div>`;
+    return;
+  }
+  $("orgbox").hidden = false;
+  $("org").innerHTML = state.me.orgs.map(o => `<option value="${o.id}">${esc(o.account_login)}</option>`).join("");
+  $("org").onchange = () => selectOrg(+$("org").value);
+  const wanted = location.hash.match(/repos\/(\d+)/);
+  await selectOrg(state.me.orgs[0].id, wanted ? +wanted[1] : null);
+}
+
+async function selectOrg(id, repoId = null) {
+  state.org = state.me.orgs.find(o => o.id === id);
+  $("org").value = id;
+  $("role").textContent = state.org.role === "owner" ? "Sahip" : "Üye";
+  $("settingsbox").hidden = state.org.role !== "owner";
+  $("settings-btn").onclick = renderSettings;
+  const repos = await api(`/api/orgs/${id}/repos`);
+  $("repobox").hidden = false;
+  $("repos").innerHTML = repos.map(r => `<div class="repo" data-id="${r.id}">
+      <span>${esc(r.full_name.split("/")[1] || r.full_name)}</span>
+      <span class="muted">${r.overall ?? "–"}</span></div>`).join("") || `<div class="muted">Depo yok</div>`;
+  document.querySelectorAll(".repo").forEach(el => el.onclick = () => selectRepo(+el.dataset.id));
+  const first = repoId && repos.some(r => r.id === repoId) ? repoId : repos[0]?.id;
+  if (first) selectRepo(first); else $("main").innerHTML = `<div class="empty muted">Bu kurulumda depo yok.</div>`;
+}
+
+async function selectRepo(id) {
+  document.querySelectorAll(".repo").forEach(el => el.classList.toggle("active", +el.dataset.id === id));
+  location.hash = `#/repos/${id}`;
+  state.repo = await api(`/api/repos/${id}`);
+  renderRepo();
+}
+
+function renderRepo() {
+  const { repository: r, snapshots } = state.repo;
+  const last = snapshots[snapshots.length - 1];
+  const scores = last ? Object.entries(last.scores).filter(([k]) => k !== "overall") : [];
+  const labels = { quality: "Kalite", testing: "Test", security: "Güvenlik", architecture: "Mimari", maintainability: "Bakım" };
+  $("main").innerHTML = `
+    <div class="row" style="justify-content:space-between"><h2 style="margin:0">${esc(r.full_name)}</h2>
+      <button id="scan-btn">Şimdi tara</button></div>
+    <p class="muted">Dal <code>${esc(r.default_branch)}</code> · son tarama ${r.last_scan_at ? new Date(r.last_scan_at).toLocaleString("tr-TR") : "henüz yok"}</p>
+    <div class="card"><div class="scores">
+      <div class="score"><span class="muted">Genel</span><b>${r.overall ?? "–"}</b></div>
+      ${scores.map(([k, v]) => `<div class="score"><span class="muted">${labels[k] || k}</span><b>${v}</b></div>`).join("")}
+      </div>
+      <div class="spark" title="Son taramalardaki genel skor">${snapshots.map(s => `<div style="height:${Math.max(2, s.overall * 0.4)}px" title="${s.overall} · ${esc(s.commit_sha.slice(0, 7))}"></div>`).join("")}</div>
+    </div>
+    <div class="tabs">
+      ${[["findings", "Bulgular"], ["fixes", "Düzeltmeler"], ["pulls", "PR riskleri"]].map(([k, l]) =>
+        `<button data-tab="${k}" class="${state.tab === k ? "active" : ""}">${l}</button>`).join("")}
+    </div>
+    <div id="tab"></div>`;
+  $("scan-btn").onclick = async () => { await api(`/api/repos/${r.id}/scan`, { method: "POST" }); toast("Tarama kuyruğa alındı."); };
+  document.querySelectorAll("[data-tab]").forEach(b => b.onclick = () => { state.tab = b.dataset.tab; renderRepo(); });
+  ({ findings: renderFindings, fixes: renderFixes, pulls: renderPulls })[state.tab]();
+}
+
+async function renderFindings(status = "open") {
+  const id = state.repo.repository.id;
+  const rows = await api(`/api/repos/${id}/findings?status=${status}`);
+  $("tab").innerHTML = `<div class="card">
+    <div class="row" style="justify-content:space-between;margin-bottom:8px"><h3 style="margin:0">Bulgular</h3>
+      <select id="fstatus" style="width:auto">${["open", "ignored", "resolved", "all"].map(s =>
+        `<option ${s === status ? "selected" : ""} value="${s}">${{open: "Açık", ignored: "Yok sayılan", resolved: "Çözülen", all: "Hepsi"}[s]}</option>`).join("")}</select></div>
+    ${rows.length ? `<table><tr><th>Önem</th><th>Dosya</th><th>Bulgu</th><th></th></tr>
+      ${rows.map(f => `<tr><td><span class="sev ${f.severity}">${f.severity}</span></td>
+        <td><code>${esc(f.file)}${f.line ? ":" + f.line : ""}</code></td>
+        <td>${esc(f.title)}<div class="muted">${esc(f.category)} · ${esc(f.rule)}</div></td>
+        <td style="white-space:nowrap">${f.status === "open" ? `<button data-fix="${f.id}" class="primary">AI ile düzelt</button>
+          <button data-ignore="${f.id}">Yok say</button>` : f.status === "ignored" ? `<button data-open="${f.id}">Geri aç</button>` : ""}</td></tr>`).join("")}
+      </table>` : `<p class="muted">Bulgu yok.</p>`}</div>`;
+  $("fstatus").onchange = () => renderFindings($("fstatus").value);
+  const act = (attr, fn) => document.querySelectorAll(`[${attr}]`).forEach(b => b.onclick = async () => {
+    b.disabled = true; try { await fn(b.getAttribute(attr)); } catch (e) { toast(e.message); b.disabled = false; } });
+  act("data-ignore", async fid => { await api(`/api/repos/${id}/findings/${fid}`, { method: "PUT", body: JSON.stringify({ status: "ignored" }) }); renderFindings(status); });
+  act("data-open", async fid => { await api(`/api/repos/${id}/findings/${fid}`, { method: "PUT", body: JSON.stringify({ status: "open" }) }); renderFindings(status); });
+  act("data-fix", async fid => { await api(`/api/repos/${id}/findings/${fid}/fix`, { method: "POST" });
+    toast("Agent bir değişiklik hazırlıyor. Düzeltmeler sekmesinden izleyin."); state.tab = "fixes"; renderRepo(); });
+}
+
+const FIX_STATUS = { queued: "Hazırlanıyor", proposed: "Onay bekliyor", approved: "Push ediliyor", pushed: "Taslak PR açıldı",
+                     failed: "Başarısız", rejected: "Reddedildi" };
+
+async function renderFixes() {
+  const id = state.repo.repository.id;
+  const rows = await api(`/api/repos/${id}/fixes`);
+  $("tab").innerHTML = `<div class="card"><h3>Düzeltmeler</h3>${rows.length ? `<table>
+    <tr><th>#</th><th>Durum</th><th>İstek</th><th></th></tr>
+    ${rows.map(f => `<tr><td>${f.id}</td><td class="${f.status === "failed" ? "err" : f.status === "pushed" ? "ok" : ""}">${FIX_STATUS[f.status] || f.status}</td>
+      <td>${esc(f.summary?.request || "")}${f.error ? `<div class="err muted">${esc(f.error)}</div>` : ""}</td>
+      <td>${f.pr_url ? `<a href="${esc(f.pr_url)}" target="_blank" rel="noopener">PR</a>` : `<button data-show="${f.id}">Aç</button>`}</td></tr>`).join("")}
+    </table>` : `<p class="muted">Henüz düzeltme istenmedi.</p>`}</div><div id="fix-detail"></div>`;
+  document.querySelectorAll("[data-show]").forEach(b => b.onclick = () => showFix(+b.dataset.show));
+  if (rows.some(f => f.status === "queued" || f.status === "approved")) setTimeout(() => state.tab === "fixes" && renderFixes(), 5000);
+}
+
+function diffHtml(diff) {
+  return `<pre class="diff">${esc(diff).split("\n").map(l => `<div class="${l.startsWith("@@") ? "hunk" : l.startsWith("+") ? "add" : l.startsWith("-") ? "del" : ""}">${l || " "}</div>`).join("")}</pre>`;
+}
+
+async function showFix(fixId) {
+  const f = await api(`/api/fixes/${fixId}`);
+  const owner = state.repo.role === "owner";
+  const check = f.summary?.check || {};
+  const checkText = check.passed === true ? `<span class="ok">geçti</span>` : check.passed === false ? `<span class="err">geçmedi</span>` : "çalıştırılmadı";
+  $("fix-detail").innerHTML = `<div class="card"><h3>Düzeltme #${f.id} · ${FIX_STATUS[f.status] || f.status}</h3>
+    <p class="muted">Model <code>${esc(f.summary?.model || "-")}</code> · kontrol ${checkText} · $${(f.summary?.cost_usd ?? 0).toFixed(4)}</p>
+    ${(f.changes || []).map(c => `<div><code><b>${esc(c.path)}</b></code>${diffHtml(c.diff)}</div>`).join("")}
+    ${f.status === "proposed" ? (owner ? `<div class="row" style="margin-top:12px"><button class="primary" id="approve">Onayla ve taslak PR aç</button>
+      <button id="reject">Reddet</button></div><p class="muted">Değişiklik <code>tokenwise/fix-${f.id}</code> dalına gider; ana dala yazılmaz.</p>`
+      : `<p class="muted">Onay organization sahibinde.</p>`) : ""}</div>`;
+  if ($("approve")) {
+    $("approve").onclick = async () => { try { await api(`/api/fixes/${f.id}/approve`, { method: "POST" }); toast("Onaylandı, taslak PR açılıyor."); renderFixes(); } catch (e) { toast(e.message); } };
+    $("reject").onclick = async () => { try { await api(`/api/fixes/${f.id}/reject`, { method: "POST" }); renderFixes(); } catch (e) { toast(e.message); } };
+  }
+}
+
+async function renderPulls() {
+  const rows = await api(`/api/repos/${state.repo.repository.id}/pulls`);
+  $("tab").innerHTML = `<div class="card"><h3>PR riskleri</h3>${rows.length ? `<table><tr><th>PR</th><th>Risk</th><th>Commit</th><th>Güncellendi</th></tr>
+    ${rows.map(p => `<tr><td><a href="https://github.com/${esc(state.repo.repository.full_name)}/pull/${p.number}" target="_blank" rel="noopener">#${p.number}</a></td>
+      <td class="${p.level === "yüksek" ? "err" : p.level === "orta" ? "warn" : "ok"}">${p.score}/100 (${esc(p.level)})</td>
+      <td><code>${esc(p.head_sha.slice(0, 7))}</code></td><td class="muted">${new Date(p.updated_at).toLocaleString("tr-TR")}</td></tr>`).join("")}
+    </table>` : `<p class="muted">Henüz PR yok. Her PR'a risk raporu yorum olarak yazılır.</p>`}</div>`;
+}
+
+async function renderSettings() {
+  const o = state.org;
+  const usage = await api(`/api/orgs/${o.id}/usage`);
+  $("main").innerHTML = `<h2>Model ayarları · ${esc(o.account_login)}</h2>
+    <div class="card"><p class="muted">Tarama ve risk raporu model çağırmaz. "AI ile düzelt" bu organization'ın kendi
+      anahtarıyla çalışır; anahtar şifreli saklanır ve bir daha gösterilmez.</p>
+      <label>Sağlayıcı</label><select id="provider"><option value="anthropic">Anthropic (Claude)</option><option value="openai">OpenAI uyumlu (sunucunun izin verdiği adres)</option></select>
+      <label>Adres (yalnızca OpenAI uyumlu)</label><input id="base" value="">
+      <label>Modeller, ucuzdan pahalıya, virgülle</label><input id="models" value="${esc((o.models || []).join(", "))}" placeholder="claude-haiku-5-5, claude-sonnet-5-5">
+      <label>API anahtarı ${o.has_model_key ? "(kayıtlı; değiştirmek için yazın)" : ""}</label><input id="key" type="password" autocomplete="off">
+      <div style="margin-top:12px"><button class="primary" id="save">Kaydet</button></div></div>
+    <div class="card"><h3>Son 30 gün</h3><p>${usage.calls} model çağrısı · ${usage.input} girdi + ${usage.output} çıktı token · $${Number(usage.cost_usd).toFixed(4)}</p></div>`;
+  $("provider").value = o.model_provider || "anthropic";
+  $("save").onclick = async () => {
+    try {
+      await api(`/api/orgs/${o.id}/model`, { method: "PUT", body: JSON.stringify({ provider: $("provider").value, base_url: $("base").value,
+        models: $("models").value.split(","), api_key: $("key").value }) });
+      state.me = await api("/api/me"); state.org = state.me.orgs.find(x => x.id === o.id); toast("Kaydedildi.");
+    } catch (e) { toast(e.message); }
+  };
+}
+
+boot();
+</script>
+</body>
+</html>

@@ -337,7 +337,23 @@ tokenwise findings --report         # haftalık Markdown rapor
 tokenwise fix 12                    # bulgu #12'yi Agent'a düzelttir, yeniden tarayıp doğrula
 tokenwise risk --base main          # bu dalın riski, kanıtları ve kontrol listesi
 tokenwise risk -f markdown          # PR yorumu olarak yapıştırılacak rapor
+tokenwise calibrate                 # risk sinyallerini bu deponun geçmişiyle ölç (AUC)
+tokenwise calibrate --save          # önerilen ağırlıkları bu projede kullan
+tokenwise findings --stats          # kural başına yanlış alarm oranı
+tokenwise scan --tools ruff,bandit,coverage   # dış araçların bulgularını da ekle
 ```
+
+- **Kalibrasyon:** Geçmişteki her commit bir PR gibi puanlanır. Kod o commit'teki haliyle,
+  geçmiş ise o commit'ten önceki haliyle kullanılır. Sonraki 20 commit içinde bir hata
+  düzeltmesi aynı koda dokunduysa o commit "sorunlu" sayılır. Her sinyalin bu sorunlu
+  commit'leri ne kadar iyi ayırdığı AUC ile ölçülür. `psf/requests` deposundaki 200 commit
+  üzerinde risk skorunun AUC'si 0,78 çıktı.
+- **Fonksiyon düzeyinde etki:** Risk raporu hangi fonksiyonların değiştiğini, onları hangi
+  fonksiyonların ve hangi testlerin çağırdığını gösterir. Python dosyaları `ast` ile okunur.
+  JS/TS dosyaları için `pip install "tokenwise-coder[impact]"` ile Tree-sitter kurulmalıdır.
+- **Konteynerde kontrol:** `tokenwise.toml` dosyasına `sandbox = "docker"` yazılırsa test
+  komutu ağı kapalı, sistemi salt okunur ve CPU/bellek sınırlı bir konteynerde çalışır.
+  Docker yoksa kontrol "başarısız" değil "atlandı" sayılır.
 
 Döngü: **anla → tespit et → önceliklendir → düzelt → doğrula → izle.** Web arayüzünde
 (`tokenwise serve`) aynı akış "Tara", "Bulgular", "Agent ile düzelt" ve "Riski hesapla"
@@ -358,6 +374,23 @@ Tasarım kuralları:
 GitHub'da her PR'a risk raporu yorumu ve haftalık sağlık raporu için
 [`examples/github/tokenwise.yml`](examples/github/tokenwise.yml) dosyasını
 `.github/workflows/` altına kopyalayın. API anahtarı gerekmez.
+
+## Barındırılan sürüm (GitHub App)
+
+`tokenwise server` komutu aynı üç modülü bir GitHub App olarak çalıştırır:
+
+- Her push'ta depo taranır.
+- Her PR'a tek bir risk yorumu yazılır ve sonraki push'larda güncellenir.
+- Panelde "AI ile düzelt" denince Agent bir değişiklik önerir. Organization sahibi onaylarsa
+  bir taslak PR açılır. Ana dala hiçbir zaman yazılmaz.
+
+Veri ve iş kuyruğu PostgreSQL'de tutulur; kontrol komutları yalnızca kilitli konteynerlerde
+çalışır. Kurulum için [`docs/hosting.md`](docs/hosting.md) dosyasına bakın.
+
+```bash
+pip install "tokenwise-coder[server]"
+docker compose up -d --build        # PostgreSQL + web + worker
+```
 
 ## Yayınlama
 
@@ -391,6 +424,11 @@ Hata ve öneriler için [Issues](https://github.com/Tugbacevikk/tokenwise/issues
 - [x] Aşama 5: VS Code eklentisi (fark görünümü, uygula/geri al, maliyet paneli)
 - [x] Aşama 6: yayın altyapısı (PyPI ve Marketplace iş akışları, CHANGELOG, issue şablonları)
 - [ ] İlk yayın: v1.0.0 etiketi
+- [x] Platform: ortak çekirdek, RepoDoctor, ReleaseGuard
+- [x] Faz 1 araçları: risk kalibrasyonu, kural başına yanlış alarm oranı
+- [x] Faz 2: Docker sandbox, Ruff/Bandit/coverage, fonksiyon düzeyinde etki
+- [x] Faz 3: barındırılan sürüm (GitHub App, PostgreSQL, kuyruk, panel)
+- [ ] Faz 1 ölçümü: 10 gerçek depo (şu an 1)
 
 ## Lisans
 

@@ -817,3 +817,36 @@ def serve(
 
 if __name__ == "__main__":
     app()
+
+
+server_app = typer.Typer(help="The hosted version: GitHub App, dashboard and worker.")
+app.add_typer(server_app, name="server")
+
+
+@server_app.command("web")
+def server_web() -> None:
+    """Run the web app (webhooks, dashboard, API). Settings come from environment variables;
+    see docs/hosting.md."""
+    from .server.app import main as web_main
+
+    web_main()
+
+
+@server_app.command("worker")
+def server_worker() -> None:
+    """Run a worker: scans, PR risk comments and approved fixes, one job at a time."""
+    from .server.worker import main as worker_main
+
+    worker_main()
+
+
+@server_app.command("migrate")
+def server_migrate() -> None:
+    """Create or update the PostgreSQL tables."""
+    from .server import db
+    from .server.config import ServerConfig
+
+    server = ServerConfig.from_env()
+    with db.connect(server.database_url) as conn:
+        db.migrate(conn)
+    console.print("[green]Database ready.[/]")
