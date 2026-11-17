@@ -7,6 +7,14 @@ a change that breaks existing use bumps major.
 
 First release.
 
+- Hosted: GitHub rate limits are waited out without using up a job's attempts; /api and
+  /auth are rate-limited per client. Daily verified PostgreSQL backups (`backup` service).
+  The dashboard shows "first scan running" while a new installation is prepared and a
+  plain-language reason when a scan fails.
+- ReleaseGuard's "changed function no test calls" list leaves out nested helpers and
+  functions whose callers the tests reach.
+- Fixed: install hints for the `web` and `server` extras lost their `[extra]` part.
+
 - Hosted reliability: webhook deliveries are recorded (a redelivery does nothing), events
   arriving out of order cannot replace newer ones, jobs with the same key never run together,
   running jobs send heartbeats, retried jobs reuse their PR comment, branch and draft PR, and

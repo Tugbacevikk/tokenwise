@@ -803,3 +803,31 @@ def test_api_and_sign_in_are_rate_limited(setup):
     client = TestClient(app)
     codes = [client.get("/auth/login", follow_redirects=False).status_code for _ in range(21)]
     assert codes[:20] == [307] * 20 and codes[20] == 429
+
+
+def test_first_run_states_and_friendly_scan_errors(setup, conn, gh, monkeypatch):
+    from tokenwise.server.app import friendly
+    from tokenwise.server.github import GitHubError
+
+    app, worker, _ = setup
+    install(TestClient(app))
+    alice = login(app, ALICE)
+    (org,) = alice.get("/api/me").json()["orgs"]
+    assert org["syncing"] is True  # the app was just installed
+    worker.run_once()  # sync: repositories read, first scan queued
+    org_id = org["id"]
+    (repo,) = alice.get(f"/api/orgs/{org_id}/repos").json()
+    assert repo["scan_state"] == "queued" and repo["overall"] is None
+    assert alice.get("/api/me").json()["orgs"][0]["syncing"] is False
+
+    def missing(*args):
+        raise GitHubError("git fetch failed: fatal: couldn't find remote ref main")
+
+    monkeypatch.setattr(gh, "clone", missing)
+    conn.execute("UPDATE jobs SET attempts = 3")  # last attempt: it ends failed
+    drain(worker)
+    detail = alice.get(f"/api/repos/{repo['id']}").json()
+    assert detail["scan"] == {"state": "failed",
+                              "error": "Varsayılan dal bulunamadı: depoda en az bir commit olmalı."}  # fmt: skip
+    assert friendly("something odd").startswith("Tarama tamamlanamadı")
+    assert friendly(None) is None

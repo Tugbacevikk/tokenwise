@@ -287,7 +287,9 @@ def role_in(conn, user_id: int, org_id: int) -> str | None:
 def orgs_of(conn, user_id: int) -> list[dict]:
     return conn.execute(
         "SELECT o.id, o.account_login, o.account_type, o.model_provider, o.models,"
-        " (o.model_key IS NOT NULL) AS has_model_key, m.role FROM organizations o"
+        " (o.model_key IS NOT NULL) AS has_model_key, m.role,"
+        " EXISTS (SELECT 1 FROM jobs j WHERE j.org_id = o.id AND j.kind = 'sync'"
+        "  AND j.status IN ('queued', 'running')) AS syncing FROM organizations o"
         " JOIN members m ON m.org_id = o.id WHERE m.user_id = %s ORDER BY o.account_login",
         (user_id,),
     ).fetchall()

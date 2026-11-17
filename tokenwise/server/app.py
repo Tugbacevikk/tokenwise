@@ -94,6 +94,28 @@ class StatusBody(BaseModel):
     status: str
 
 
+# What a person can do about the errors a scan most often ends with.
+_FRIENDLY = (
+    ("repository is gone", "Depo bu kurulumdan kaldırılmış."),
+    (
+        "Repository not found",
+        "GitHub depoya erişim vermedi: App'in bu depoya kurulu olduğundan emin olun.",
+    ),
+    ("couldn't find remote ref", "Varsayılan dal bulunamadı: depoda en az bir commit olmalı."),
+    ("rate limit", "GitHub istek sınırına ulaşıldı; tarama kendiliğinden yeniden denenecek."),
+    ("timed out", "İşlem zaman aşımına uğradı; depo çok büyük olabilir."),
+)
+
+
+def friendly(error: str | None) -> str | None:
+    if not error:
+        return None
+    for needle, text in _FRIENDLY:
+        if needle.lower() in error.lower():
+            return text
+    return "Tarama tamamlanamadı. Ayrıntı: " + error[:200]
+
+
 def make_github(server: ServerConfig) -> GitHub:
     return GitHubApp(AppConfig(**server.github))
 
@@ -306,8 +328,12 @@ def create_app(
         return conn.execute(
             "SELECT r.id, r.full_name, r.default_branch, r.overall, r.last_scan_at,"
             " (SELECT COUNT(*) FROM findings f WHERE f.repository_id = r.id"
-            "  AND f.status = 'open') AS open_findings"
-            " FROM repositories r WHERE r.org_id = %s ORDER BY r.full_name",
+            "  AND f.status = 'open') AS open_findings,"
+            " s.status AS scan_state, s.error AS scan_error"
+            " FROM repositories r LEFT JOIN LATERAL ("
+            "  SELECT status, error FROM jobs j WHERE j.kind = 'scan'"
+            "  AND j.payload->>'repository_id' = r.id::text ORDER BY j.id DESC LIMIT 1"
+            " ) s ON true WHERE r.org_id = %s ORDER BY r.full_name",
             (org_id,),
         ).fetchall()
 
@@ -321,7 +347,13 @@ def create_app(
     def repo_detail(repo_id: int, user=Depends(current_user), conn=Depends(get_conn)) -> dict:
         repo = need_repo(conn, user, repo_id)
         role = db.role_in(conn, user["id"], repo["org_id"])
+        scan = conn.execute(
+            "SELECT status, error FROM jobs WHERE kind = 'scan'"
+            " AND payload->>'repository_id' = %s ORDER BY id DESC LIMIT 1",
+            (str(repo_id),),
+        ).fetchone()
         return {
+            "scan": {"state": scan["status"], "error": friendly(scan["error"])} if scan else None,
             "repository": {
                 k: repo[k]
                 for k in ("id", "full_name", "default_branch", "overall", "last_scan_at", "org_id")
