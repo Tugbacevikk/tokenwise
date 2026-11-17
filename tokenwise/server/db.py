@@ -575,5 +575,48 @@ def prune_deliveries(conn, days: int = 30) -> int:
     ).rowcount
 
 
+def metrics(conn) -> str:
+    """The queue, webhooks and fixes in Prometheus' text format."""
+    lines: list[str] = []
+
+    def gauge(name: str, help_text: str, rows, label_keys=()) -> None:
+        lines.append(f"# HELP tokenwise_{name} {help_text}")
+        lines.append(f"# TYPE tokenwise_{name} gauge")
+        for row in rows:
+            labels = ",".join(f'{k}="{row[k]}"' for k in label_keys)
+            value = row["value"] if row["value"] is not None else 0
+            lines.append(f"tokenwise_{name}{{{labels}}} {float(value):g}" if labels
+                         else f"tokenwise_{name} {float(value):g}")  # fmt: skip
+
+    q = conn.execute
+    gauge("jobs", "Jobs by kind and status.", q(
+        "SELECT kind, status, COUNT(*) AS value FROM jobs GROUP BY kind, status"
+    ).fetchall(), ("kind", "status"))  # fmt: skip
+    gauge("jobs_failed_last_hour", "Jobs that ended failed in the last hour.", q(
+        "SELECT kind, COUNT(*) AS value FROM jobs WHERE status = 'failed'"
+        " AND finished_at > now() - interval '1 hour' GROUP BY kind"
+    ).fetchall(), ("kind",))  # fmt: skip
+    gauge("job_seconds_last_hour", "Average run time of jobs finished in the last hour.", q(
+        "SELECT kind, AVG(EXTRACT(EPOCH FROM finished_at - started_at)) AS value FROM jobs"
+        " WHERE finished_at > now() - interval '1 hour' AND started_at IS NOT NULL GROUP BY kind"
+    ).fetchall(), ("kind",))  # fmt: skip
+    gauge("oldest_queued_job_seconds", "How long the oldest ready job has waited.", q(
+        "SELECT COALESCE(MAX(EXTRACT(EPOCH FROM now() - run_after)), 0) AS value FROM jobs"
+        " WHERE status = 'queued' AND run_after <= now()"
+    ).fetchall())  # fmt: skip
+    gauge("webhooks_last_hour", "Webhook deliveries received in the last hour.", q(
+        "SELECT event, COUNT(*) AS value FROM webhook_deliveries"
+        " WHERE received_at > now() - interval '1 hour' GROUP BY event"
+    ).fetchall(), ("event",))  # fmt: skip
+    gauge("fixes", "Fixes by status.", q(
+        "SELECT status, COUNT(*) AS value FROM fixes GROUP BY status"
+    ).fetchall(), ("status",))  # fmt: skip
+    gauge("organizations", "Installed organizations.",
+          q("SELECT COUNT(*) AS value FROM organizations").fetchall())  # fmt: skip
+    gauge("repositories", "Repositories watched.",
+          q("SELECT COUNT(*) AS value FROM repositories").fetchall())  # fmt: skip
+    return "\n".join(lines) + "\n"
+
+
 def to_json(value) -> str:
     return json.dumps(value, default=str, ensure_ascii=False)

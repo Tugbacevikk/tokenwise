@@ -742,3 +742,17 @@ def test_sessions_expire_end_everywhere_and_follow_github_membership(setup, conn
     assert alice.get("/api/me").status_code == 401
     login(app, ALICE)
     assert conn.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()["n"] == 1
+
+
+def test_metrics_need_their_token(setup, conn, server):
+    app, worker, _ = setup
+    client = TestClient(app)
+    assert client.get("/metrics").status_code == 404  # no token configured: no endpoint
+    server.metrics_token = "m" * 24
+    install(client)
+    drain(worker)
+    assert client.get("/metrics", headers={"Authorization": "Bearer wrong"}).status_code == 404
+    text = client.get("/metrics", headers={"Authorization": f"Bearer {'m' * 24}"}).text
+    assert 'tokenwise_jobs{kind="scan",status="done"} 1' in text
+    assert "tokenwise_repositories 1" in text and "tokenwise_oldest_queued_job_seconds 0" in text
+    assert 'tokenwise_job_seconds_last_hour{kind="sync"}' in text

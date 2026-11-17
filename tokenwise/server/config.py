@@ -29,6 +29,8 @@ class ServerConfig:
     secret_key: str
     public_url: str = "http://localhost:8000"
     sandbox_image: str = "python:3.12-slim"
+    sandbox_runtime: str = ""  # "runsc" to run checks under gVisor
+    metrics_token: str = ""  # bearer token for /metrics; empty = no metrics endpoint
     scan_tools: tuple[str, ...] = ("ruff", "bandit")
     allowed_model_urls: tuple[str, ...] = ()  # OpenAI-compatible servers owners may choose
     work_dir: str = ""  # clones and check copies; must be the same path on the Docker host
@@ -48,6 +50,8 @@ class ServerConfig:
             secret_key=secret,
             public_url=os.getenv("TOKENWISE_PUBLIC_URL", "http://localhost:8000").rstrip("/"),
             sandbox_image=os.getenv("TOKENWISE_SANDBOX_IMAGE", "python:3.12-slim"),
+            sandbox_runtime=os.getenv("TOKENWISE_SANDBOX_RUNTIME", ""),
+            metrics_token=os.getenv("TOKENWISE_METRICS_TOKEN", ""),
             scan_tools=_split(os.getenv("TOKENWISE_SCAN_TOOLS", "ruff,bandit")),
             allowed_model_urls=_split(os.getenv("TOKENWISE_ALLOWED_MODEL_URLS", "")),
             work_dir=os.getenv("TOKENWISE_WORK_DIR", ""),
@@ -105,6 +109,7 @@ def repo_settings(root: Path, server: ServerConfig, org: dict | None = None) -> 
     settings.check_timeout = max(10, min(settings.check_timeout, MAX_CHECK_TIMEOUT))
     settings.sandbox = "docker"
     settings.sandbox_image = server.sandbox_image
+    settings.sandbox_runtime = server.sandbox_runtime
     settings.scan_tools = server.scan_tools
     settings.cache = False
     org = org or {}

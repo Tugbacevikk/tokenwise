@@ -31,7 +31,7 @@ from datetime import timedelta
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from pydantic import BaseModel
 
 from ..health import SEVERITY_WEIGHT
@@ -124,6 +124,15 @@ def create_app(
     def healthz(conn=Depends(get_conn)) -> dict:
         conn.execute("SELECT 1")
         return {"ok": True, "jobs": queue.counts(conn)}
+
+    @app.get("/metrics")
+    def metrics(request: Request, conn=Depends(get_conn)) -> Response:
+        """Prometheus metrics, only with TOKENWISE_METRICS_TOKEN set and sent as a bearer."""
+        expected = f"Bearer {server.metrics_token}"
+        given = request.headers.get("authorization", "")
+        if not server.metrics_token or not secrets.compare_digest(given, expected):
+            raise HTTPException(404, "Not Found")
+        return PlainTextResponse(db.metrics(conn), media_type="text/plain; version=0.0.4")
 
     @app.get("/")
     def page() -> FileResponse:

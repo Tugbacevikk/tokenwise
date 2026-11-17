@@ -7,6 +7,17 @@ a change that breaks existing use bumps major.
 
 First release.
 
+- Hosted reliability: webhook deliveries are recorded (a redelivery does nothing), events
+  arriving out of order cannot replace newer ones, jobs with the same key never run together,
+  running jobs send heartbeats, retried jobs reuse their PR comment, branch and draft PR, and
+  an approval is checked against the default branch as it is now ("stale" if a file changed).
+- Hosted security: one-day sessions with membership re-read at every sign-in, logout on all
+  devices, `__Host-` cookies; checks never run as root (`nobody` when the worker is root),
+  open files limited, optional gVisor (`TOKENWISE_SANDBOX_RUNTIME=runsc`).
+- `GET /metrics` (Prometheus) behind `TOKENWISE_METRICS_TOKEN`.
+- Tokenwise runs ReleaseGuard on its own pull requests and RepoDoctor weekly
+  (.github/workflows/tokenwise.yml).
+
 - JS/TS functions get complexity and length findings (Tree-sitter), and ReleaseGuard's
   complexity signal now covers them: on 4 JS/TS repositories its AUC went from 0.50 to
   0.54-0.83. Imports of a project's own packages by name (`"zod/v4"`) are resolved through

@@ -114,6 +114,9 @@ class Settings:
     sandbox_image: str = "python:3.12-slim"
     sandbox_cpus: float = 1.0
     sandbox_memory: str = "1g"
+    sandbox_runtime: str = (
+        ""  # e.g. "runsc" (gVisor): a user-space kernel between the check and the host
+    )
     prices: dict = field(default_factory=dict)
 
     @property
