@@ -75,6 +75,10 @@
   <div id="settingsbox" hidden>
     <button id="settings-btn" style="width:100%">Model ayarları</button>
   </div>
+  <div id="logoutbox" hidden style="margin-top:auto; display:flex; flex-direction:column; gap:6px">
+    <button id="logout-btn">Çıkış yap</button>
+    <button id="logout-all-btn" class="muted">Tüm cihazlarda çıkış yap</button>
+  </div>
 </aside>
 <main id="main"></main>
 <div id="toast"></div>
@@ -104,6 +108,9 @@ function renderLogin() {
 async function boot() {
   try { state.me = await api("/api/me"); } catch { return; }
   $("who").textContent = "@" + state.me.user.login;
+  $("logoutbox").hidden = false;
+  $("logout-btn").onclick = async () => { await api("/auth/logout", { method: "POST" }); location.reload(); };
+  $("logout-all-btn").onclick = async () => { await api("/auth/logout-all", { method: "POST" }).catch(() => {}); location.reload(); };
   if (!state.me.orgs.length) {
     $("main").innerHTML = `<div class="empty"><h2>Henüz kurulum yok</h2><p class="muted">Tokenwise GitHub
       uygulamasını bir hesaba ya da organization'a kurun; sonra bu sayfaya dönün.</p></div>`;

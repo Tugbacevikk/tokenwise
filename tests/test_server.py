@@ -720,3 +720,25 @@ def test_removed_installation_stays_removed_and_mid_job_removal_is_safe(setup, c
         assert conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"] == 0, table
     install(client)  # a late redelivery of "created" for the removed installation
     assert conn.execute("SELECT COUNT(*) AS n FROM organizations").fetchone()["n"] == 0
+
+
+def test_sessions_expire_end_everywhere_and_follow_github_membership(setup, conn, gh):
+    app, worker, _ = setup
+    install(TestClient(app))
+    bob = login(app, BOB)
+    assert len(bob.get("/api/me").json()["orgs"]) == 1
+    assert any(c.startswith("__Host-") for c in bob.cookies)  # https: host-only cookie
+    # Bob leaves the GitHub organization: his next sign-in removes him here too
+    gh.installations[BOB["id"]] = []
+    bob_again = login(app, BOB)
+    assert bob_again.get("/api/me").json()["orgs"] == []
+    # logging out needs the header; logout-all ends every session
+    assert bob.post("/auth/logout", headers={"X-Tokenwise": ""}).status_code == 403
+    assert bob_again.post("/auth/logout-all").json()["ended"] == 2
+    assert bob.get("/api/me").status_code == 401
+    # an expired session is refused and cleaned up at the next sign-in
+    alice = login(app, ALICE)
+    conn.execute("UPDATE sessions SET expires_at = now() - interval '1 minute'")
+    assert alice.get("/api/me").status_code == 401
+    login(app, ALICE)
+    assert conn.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()["n"] == 1

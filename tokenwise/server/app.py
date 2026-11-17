@@ -7,7 +7,9 @@ that change something must carry the `X-Tokenwise: 1` header, which a cross-site
 
   POST /webhooks/github                        installation, installation_repositories, push,
                                                pull_request (drafts included)
-  GET  /auth/login, /auth/callback             sign in with GitHub;  POST /auth/logout
+  GET  /auth/login, /auth/callback             sign in with GitHub (a session lasts 24 hours;
+                                               membership is read again at every sign-in)
+  POST /auth/logout, /auth/logout-all          end this session / every session
   GET  /api/me                                 the user and their organizations
   PUT  /api/orgs/{id}/model                    provider, models and key (owner)
   GET  /api/orgs/{id}/repos | /usage
@@ -40,7 +42,9 @@ from .github import AppConfig, GitHub, GitHubApp, GitHubError, verify_signature
 PAGE = Path(__file__).parent / "static" / "dashboard.html"
 SESSION_COOKIE = "tw_session"
 STATE_COOKIE = "tw_state"
-SESSION_DAYS = 14
+# Membership is read from GitHub at sign-in, so a session lasts one day: someone removed
+# from a GitHub organization loses access here within a day, without storing their token.
+SESSION_HOURS = 24
 PR_ACTIONS = ("opened", "synchronize", "reopened", "ready_for_review", "edited")
 
 
@@ -67,6 +71,9 @@ def create_app(
     app = FastAPI(title="Tokenwise", docs_url=None, redoc_url=None)
     connect = connect or (lambda: db.connect(server.database_url))
     secure = server.public_url.startswith("https://")
+    # over https the cookie gets the __Host- prefix: browsers then refuse it unless it is
+    # Secure, for this host only and for the whole site, so a subdomain cannot plant one
+    session_cookie = f"__Host-{SESSION_COOKIE}" if secure else SESSION_COOKIE
 
     def get_conn():
         conn = connect()
@@ -76,7 +83,7 @@ def create_app(
             conn.close()
 
     def current_user(request: Request, conn=Depends(get_conn)) -> dict:
-        token = request.cookies.get(SESSION_COOKIE, "")
+        token = request.cookies.get(session_cookie, "")
         row = None
         if token:
             row = conn.execute(
@@ -170,30 +177,46 @@ def create_app(
             raise HTTPException(502, str(exc)) from exc
         with db.tx(conn):
             db.upsert_user(conn, gh_user["id"], gh_user["login"])
+            reachable = []
             for inst in installations:
                 org = db.org_by_installation(conn, inst["id"])
                 if org is None:
                     continue
+                reachable.append(org["id"])
                 personal = inst.get("account", {}).get("id") == gh_user["id"]
                 db.set_member(conn, org["id"], gh_user["id"], "owner" if personal else "member")
+            # GitHub no longer lets this person reach these installations: no longer a member
+            conn.execute("DELETE FROM members WHERE user_id = %s AND NOT (org_id = ANY(%s))",
+                         (gh_user["id"], reachable))  # fmt: skip
+            conn.execute("DELETE FROM sessions WHERE expires_at < now()")
             session = secrets.token_urlsafe(32)
             conn.execute(
                 "INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (%s, %s, %s)",
-                (db.token_hash(session), gh_user["id"], db.now() + timedelta(days=SESSION_DAYS)),
+                (db.token_hash(session), gh_user["id"], db.now() + timedelta(hours=SESSION_HOURS)),
             )
         response = RedirectResponse("/")
-        response.set_cookie(SESSION_COOKIE, session, max_age=SESSION_DAYS * 86400, httponly=True,
-                            secure=secure, samesite="lax")  # fmt: skip
+        response.set_cookie(session_cookie, session, max_age=SESSION_HOURS * 3600, path="/",
+                            httponly=True, secure=secure, samesite="lax")  # fmt: skip
         response.delete_cookie(STATE_COOKIE)
         return response
 
     @app.post("/auth/logout")
     def logout(request: Request, conn=Depends(get_conn)) -> Response:
-        token = request.cookies.get(SESSION_COOKIE, "")
+        if request.headers.get("x-tokenwise") != "1":
+            raise HTTPException(403, "X-Tokenwise başlığı eksik.")
+        token = request.cookies.get(session_cookie, "")
         if token:
             conn.execute("DELETE FROM sessions WHERE token_hash = %s", (db.token_hash(token),))
         response = JSONResponse({"ok": True})
-        response.delete_cookie(SESSION_COOKIE)
+        response.delete_cookie(session_cookie, path="/", secure=secure, httponly=True)
+        return response
+
+    @app.post("/auth/logout-all")
+    def logout_all(user=Depends(current_user), conn=Depends(get_conn)) -> Response:
+        """Ends every session of this person, on every device."""
+        ended = conn.execute("DELETE FROM sessions WHERE user_id = %s", (user["id"],)).rowcount
+        response = JSONResponse({"ended": ended})
+        response.delete_cookie(session_cookie, path="/", secure=secure, httponly=True)
         return response
 
     # ------------------------------------------------------------ API
