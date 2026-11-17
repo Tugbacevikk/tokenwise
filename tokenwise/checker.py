@@ -125,7 +125,8 @@ def run_in_docker(
         subprocess.run(["docker", "kill", name], capture_output=True, timeout=30)
         return CheckResult(False, f"check timed out after {settings.check_timeout} s")
     output = (done.stdout + done.stderr).strip()[-OUTPUT_TAIL:]
-    if done.returncode == DOCKER_ERROR:
+    unreachable = ("Cannot connect to the Docker daemon", "error during connect")
+    if done.returncode == DOCKER_ERROR or any(u in done.stderr for u in unreachable):
         return CheckResult(False, f"docker could not run the check: {output}", skipped=True)
     if done.returncode == SKIP_EXIT:
         return CheckResult(False, output, skipped=True)

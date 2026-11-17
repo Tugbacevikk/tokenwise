@@ -78,6 +78,19 @@ def test_docker_error_is_a_skip(tmp_path, monkeypatch):
     assert result.skipped and "Cannot connect" in result.output
 
 
+def test_unreachable_daemon_is_a_skip_whatever_the_exit_code(tmp_path, monkeypatch):
+    import subprocess as sp
+
+    import tokenwise.checker as checker
+
+    def down(args, **kwargs):
+        return sp.CompletedProcess(args, 1, "", "error during connect: open //./pipe/docker")
+
+    monkeypatch.setattr(checker.subprocess, "run", down)
+    result = run_in_docker(Settings(root=tmp_path, sandbox="docker"), "true", tmp_path)
+    assert result.skipped and not result.passed
+
+
 def test_local_sandbox_still_runs_on_the_host(tmp_path):
     (tmp_path / "a.py").write_text("x = 1\n", "utf-8")
     result = check_in_copy(Settings(root=tmp_path), [], '{python} -c "import a"')
