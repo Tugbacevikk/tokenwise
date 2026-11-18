@@ -124,7 +124,7 @@ class FakeGitHub:
                  "default_branch": r["default_branch"]} for r in self.repos.values()]  # fmt: skip
 
     def login_url(self, state):
-        return f"https://github.example/login?state={state}"
+        return f"https://github.example/login/oauth/authorize?client_id=c&state={state}"
 
     def exchange_code(self, code):
         return "token-" + code
@@ -1027,3 +1027,58 @@ def test_rate_limit_is_shared_between_web_processes(conn):
 
     alone = SharedRateLimiter(broken, (("/api/", 1),))  # falls back to counting in memory
     assert alone.check("a", "/api/x") == 0 and alone.check("a", "/api/x") > 0
+
+
+class FakeHookApp:
+    def __init__(self, config=None, error=None):
+        self.config, self.error = config, error
+
+    def webhook_config(self):
+        if self.error:
+            raise self.error
+        return self.config
+
+
+def test_selftest_goes_the_way_github_goes(setup, server, conn):
+    """Through the public address: health, a signed ping, the App's webhook URL, the sign-in
+    redirect and a worker taking a job; each failure says what to fix."""
+    import threading
+
+    from tokenwise.server.selftest import check_app_webhook, check_worker, run_selftest
+
+    app, worker, model = setup
+    http = TestClient(app, base_url=server.public_url)
+    hook = FakeHookApp({"url": server.public_url + "/webhooks/github", "content_type": "json"})
+    connect = lambda: db.connect(DATABASE_URL)  # noqa: E731
+    threading.Timer(0.3, lambda: drain(worker)).start()  # a worker comes by
+    checks = {c.name: c for c in run_selftest(server, http, hook, connect, worker_timeout=10)}
+    assert all(c.ok for c in checks.values()), [c for c in checks.values() if not c.ok]
+    assert set(checks) == {"Dış adres", "Webhook", "App webhook adresi", "Giriş", "Worker"}
+    assert conn.execute("SELECT COUNT(*) AS n FROM jobs WHERE kind = 'ping'").fetchone()["n"] == 0
+
+    old = check_app_webhook(server, FakeHookApp({"url": "https://old.trycloudflare.com/webhooks/github",
+                                                 "content_type": "json"}))  # fmt: skip
+    assert not old.ok and "old.trycloudflare.com" in old.detail and server.public_url in old.detail
+    form = check_app_webhook(
+        server, FakeHookApp({"url": hook.config["url"], "content_type": "form"})
+    )
+    assert not form.ok and "json" in form.detail
+    assert not check_app_webhook(server, FakeHookApp(error=RuntimeError("401"))).ok
+    nobody = check_worker(connect, timeout=0.3, poll=0.1)  # no worker running
+    assert not nobody.ok and "worker" in nobody.detail
+    import dataclasses  # this machine's secret differs from the web process's
+
+    here = dataclasses.replace(server, github={**server.github, "webhook_secret": "other-secret"})
+    wrong = {c.name: c for c in run_selftest(here, http, hook, connect, worker_timeout=0.2)}
+    assert not wrong["Webhook"].ok and "GITHUB_WEBHOOK_SECRET" in wrong["Webhook"].detail
+
+
+def test_selftest_stops_at_a_dead_address(server):
+    from tokenwise.server.selftest import run_selftest
+
+    class Dead:
+        def get(self, *a, **k):
+            raise OSError("connection refused")
+
+    (only,) = run_selftest(server, Dead(), connect=lambda: None)
+    assert not only.ok and "TOKENWISE_PUBLIC_URL" in only.detail

@@ -114,6 +114,7 @@ class Worker:
             "pr_risk": self.pr_risk,
             "fix_propose": self.fix_propose,
             "fix_push": self.fix_push,
+            "ping": lambda payload: None,  # `server selftest`: proves a worker is taking jobs
         }
 
     # ------------------------------------------------------------ loop

@@ -168,6 +168,11 @@ class GitHubApp:
         """The app as GitHub sees it: name, events, permissions, installation count."""
         return self._json(self.http.get("/app", headers={"Authorization": f"Bearer {self._jwt()}"}))
 
+    def webhook_config(self) -> dict:
+        """Where GitHub sends this app's events: url, content_type (secret is masked)."""
+        headers = {"Authorization": f"Bearer {self._jwt()}"}
+        return self._json(self.http.get("/app/hook/config", headers=headers))
+
     def token(self, installation_id: int) -> str:
         cached = self._tokens.get(installation_id)
         if cached and cached[1] > time.time() + 120:
