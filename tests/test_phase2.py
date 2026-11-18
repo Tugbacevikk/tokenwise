@@ -325,3 +325,9 @@ def test_untested_function_list_skips_nested_helpers_and_caller_tested_code(tmp_
     untested = [r for r in tests_signal.reasons if "hiçbir testin çağırmadığı" in r]
     # helper is nested in outer; outer's caller api.py is tested; only lonely is left
     assert untested == ["Kullanılan ama hiçbir testin çağırmadığı değişen fonksiyon: `lonely`"]
+
+
+def test_checklist_shows_the_check_without_the_python_placeholder(py_repo):
+    (py_repo / "pkg" / "new.py").write_text("def a():\n    return 1\n", "utf-8")
+    report = assess(Settings(root=py_repo, check="{python} -m pytest -q"), "main")
+    assert "Proje kontrolünü çalıştır: `python -m pytest -q`" in report.checklist

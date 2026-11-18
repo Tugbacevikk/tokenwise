@@ -4,7 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Tokenwise</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Ccircle cx=%228%22 cy=%228%22 r=%227%22 fill=%22%23c15f3c%22/%3E%3C/svg%3E">
 <style>
+  [hidden] { display: none !important; }
   :root {
     --bg: #faf9f6; --panel: #f0eee8; --card: #ffffff; --line: #dcd8cf;
     --text: #22201c; --muted: #7a766c; --accent: #c15f3c; --accent-soft: #f7e6de;
@@ -57,6 +59,15 @@
            border-radius: 10px; font-size: 14px; display: none; max-width: 420px; }
   .empty { text-align: center; padding: 60px 20px; }
   label { font-size: 13px; color: var(--muted); display: block; margin: 8px 0 3px; }
+  @media (max-width: 760px) {
+    body { display: block; }
+    aside { border-right: 0; border-bottom: 1px solid var(--line); }
+    main { padding: 16px 14px; }
+    .card { overflow-x: auto; }
+    td[style*="nowrap"] { white-space: normal !important; }
+    .tabs { flex-wrap: wrap; }
+    .score { min-width: 90px; }
+  }
 </style>
 </head>
 <body>
