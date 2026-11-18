@@ -52,8 +52,9 @@ kullanılır. Reklam, analitik ya da izleme çerezi yoktur.
 | Webhook teslimat kimlikleri (tekrarları önlemek için) | 30 gün | Saatlik temizlikte |
 | Kaldırılan kurulumların kimliği (geç gelen olayları yok saymak için) | 90 gün | Saatlik temizlikte |
 | Veritabanı yedekleri | 14 gün | `deploy/backup.sh` eski yedekleri siler |
+| Sunucu günlükleri (log) | Servis başına en çok 5 × 10 MB; dolunca en eskisi silinir (yoğunluğa göre birkaç gün ile birkaç hafta) | `docker-compose.yml` içindeki `x-logging` ayarı |
 
-Süreler kodda `tokenwise/server/db.py` içindeki `RETENTION_DAYS` ile tanımlıdır; worker
+Yukarıdaki süreler bu depodaki `docker-compose.yml` ile kurulan dağıtım içindir. Farklı bir kurulumda (başka bir log sistemi, farklı `BACKUP_KEEP_DAYS`) metin o kuruluma göre güncellenmelidir. Süreler kodda `tokenwise/server/db.py` içindeki `RETENTION_DAYS` ile tanımlıdır; worker
 temizliği yaklaşık saatte bir çalıştırır.
 
 ## Haklar ve nasıl kullanılır

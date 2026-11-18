@@ -1,7 +1,17 @@
 # Hosted Tokenwise: PostgreSQL, the web app and one worker. Settings: .env.server
 # (copy .env.server.example). Read docs/hosting.md first: the worker uses the host's Docker.
+
+# Logs are kept on the host by Docker; without a limit they grow forever. These limits are the
+# retention docs/privacy.md promises: at most 5 files of 10 MB per service.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   db:
+    logging: *logging
     image: postgres:16
     environment:
       POSTGRES_USER: tokenwise
@@ -16,6 +26,7 @@ services:
     restart: unless-stopped
 
   web:
+    logging: *logging
     build: .
     command: ["tokenwise", "server", "web"]
     env_file: .env.server
@@ -31,6 +42,7 @@ services:
     restart: unless-stopped
 
   worker:
+    logging: *logging
     build: .
     command: ["tokenwise", "server", "worker"]
     env_file: .env.server
@@ -51,6 +63,7 @@ services:
     restart: unless-stopped
 
   backup:
+    logging: *logging
     # one verified pg_dump a day into ./backups, kept 14 days (deploy/backup.sh)
     image: postgres:16
     entrypoint: ["sh", "/deploy/backup.sh"]
