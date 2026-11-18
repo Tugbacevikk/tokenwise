@@ -165,3 +165,56 @@ def test_health_findings_and_risk_in_the_browser(tmp_path):
         browser.close()
     server.should_exit = True
     assert not errors
+
+
+def test_plan_threads_can_be_skipped_reopened_and_marked_done(served):
+    url, _ = served
+    with sync_api.sync_playwright() as p:
+        try:
+            browser = p.chromium.launch()
+        except Exception as exc:
+            pytest.skip(f"Chromium is not installed: {exc}")
+        page, errors = open_page(browser, url)
+        assert page.is_visible("#intent")
+        page.click("#mode-plan")
+        assert not page.is_visible("#intent")  # the intent only means something in chat mode
+        page.fill("#input", "login güvenliği")
+        page.click("#send")
+        page.wait_for_selector(".plan")
+        first, second = page.locator(".thread >> nth=0"), page.locator(".thread >> nth=1")
+        first.locator("text=Atla").click()
+        page.wait_for_selector(".thread.skipped")
+        first.locator("text=Geri aç").click()
+        page.wait_for_selector(".thread.pending >> nth=1")
+        first.locator("text=Bitti say").click()
+        page.wait_for_selector(".thread.done")
+        assert second.locator("button.primary").is_enabled()  # its dependency is now done
+        browser.close()
+    assert not errors
+
+
+def test_side_by_side_toggle_and_reopened_session(project):
+    llm = FakeLLM('{"intent": "change", "ready": true, "questions": []}', '["app/auth.py"]', EDIT)
+    server, url = start(create_app(project, llm_factory=lambda s: llm))
+    with sync_api.sync_playwright() as p:
+        try:
+            browser = p.chromium.launch()
+        except Exception as exc:
+            server.should_exit = True
+            pytest.skip(f"Chromium is not installed: {exc}")
+        page, errors = open_page(browser, url)
+        page.fill("#input", "şifre uzunluğunu kontrol et")
+        page.click("#send")
+        page.wait_for_selector("text=Uygula")
+        page.check("#sbs")  # existing diffs switch to side by side
+        assert page.locator("#log .sbs").count() == 1 and page.locator("#log pre.diff").count() == 0
+        page.uncheck("#sbs")
+        assert page.locator("#log pre.diff").count() == 1
+        page.click("text=Uygula")
+        page.wait_for_selector("text=Uygulandı.")
+        page.reload()  # the last chat comes back; its applied proposal cannot be applied again
+        page.wait_for_selector("text=Bu öneri artık uygulanamaz")
+        assert page.locator("#log button:has-text('Uygula')").count() == 0
+        browser.close()
+    server.should_exit = True
+    assert not errors

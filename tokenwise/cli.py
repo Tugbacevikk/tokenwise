@@ -18,7 +18,7 @@ from rich.table import Table
 from . import __version__
 from . import llm as llm_module
 from .config import CONFIG_FILE, STATE_DIR, Settings, config_template, load_settings
-from .editor import Change, EditError, apply_changes, resolve, undo_last
+from .editor import Change, EditError, apply_changes, committed_change, resolve, undo_last
 from .ledger import Ledger, ledger_path
 from .llm import LLM, CachedLLM, ConfigError, ContextTooLongError, LLMError, cache_path
 from .pipeline import Result, run
@@ -309,11 +309,15 @@ def undo(
     as_json: bool = typer.Option(False, "--json", help="Print the outcome as JSON."),
 ) -> None:
     """Undo the last applied change."""
-    restored = undo_last(load_settings(root))
+    settings = load_settings(root)
+    restored = undo_last(settings)
     if as_json:
         print(json.dumps({"ok": bool(restored), "restored": restored}))
     elif restored:
         console.print(f"[green]Restored:[/] {', '.join(restored)}")
+    elif committed_change(settings):
+        sha = committed_change(settings)
+        console.print(f"The last change was committed ({sha}); use: git revert {sha}")
     else:
         console.print("Nothing to undo.")
 

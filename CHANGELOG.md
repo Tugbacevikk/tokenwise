@@ -7,6 +7,15 @@ a change that breaks existing use bumps major.
 
 First release.
 
+- Local web page, after a full browser walkthrough: the side-by-side diff switch redraws
+  existing diffs; the last chat reopens after a reload and proposals that can no longer be
+  applied say so; plan threads can be skipped, marked done or reopened, and plans edited by
+  chat; a full weekly budget offers "Yine de çalıştır"; pipeline errors are shown in Turkish
+  with what to do next; undo after a commit points to `git revert` instead of leaving the file
+  modified; unknown picked files are explained; works on phone-width screens.
+- Hosted dashboard: logout buttons no longer show before sign-in; phone-width layout.
+- `python -m tokenwise` works where the `tokenwise` command is not on PATH.
+
 - Hosted: GitHub rate limits are waited out without using up a job's attempts; /api and
   /auth are rate-limited per client. Daily verified PostgreSQL backups (`backup` service).
   The dashboard shows "first scan running" while a new installation is prepared and a

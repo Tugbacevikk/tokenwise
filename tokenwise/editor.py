@@ -21,6 +21,7 @@ from .textio import NotTextError, Style, read_source, read_style, write_source
 ATTEMPTS_PER_MODEL = 2
 MAX_LISTED_FILES = 200
 UNDO_FILE = "last_change.json"
+COMMITTED_FILE = "last_change.committed"  # the undone-able change went into this commit
 
 # Lenient on purpose: small local models write 4–9 marker characters, drop the space before
 # SEARCH, or put the file name in bold, backticks or a heading.
@@ -376,9 +377,26 @@ def apply_changes(settings: Settings, changes: list[Change]) -> None:
         for c in changes
     }
     settings.state_dir.mkdir(exist_ok=True)
+    (settings.state_dir / COMMITTED_FILE).unlink(missing_ok=True)
     (settings.state_dir / UNDO_FILE).write_text(json.dumps(undo, ensure_ascii=False), "utf-8")
     for change in changes:
         write_source(paths[change.path], change.new, styles.get(change.path, new_style))
+
+
+def forget_undo(settings: Settings, paths: list[str], sha: str) -> None:
+    """After a commit of the last change, undoing it would leave the commit in place and the
+    files modified, so the undo record is dropped and the commit remembered instead."""
+    undo_path = settings.state_dir / UNDO_FILE
+    if not undo_path.exists() or not set(json.loads(undo_path.read_text("utf-8"))) <= set(paths):
+        return
+    undo_path.unlink()
+    (settings.state_dir / COMMITTED_FILE).write_text(sha, "utf-8")
+
+
+def committed_change(settings: Settings) -> str:
+    """The commit the last change went into, if it was committed after being applied."""
+    path = settings.state_dir / COMMITTED_FILE
+    return path.read_text("utf-8").strip() if path.exists() else ""
 
 
 def undo_last(settings: Settings) -> list[str]:

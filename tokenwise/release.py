@@ -136,7 +136,10 @@ def resolve_base(root: Path, base: str) -> str:
         if git(root, "rev-parse", "--verify", "--quiet", ref + "^{commit}"):
             merge = git(root, "merge-base", ref, "HEAD")
             return (merge or ref).strip()
-    raise GuardError(f"Temel dal bulunamadı: {base or 'main/master'}. --base ile belirtin.")
+    raise GuardError(
+        f"Temel dal bulunamadı: {base or 'main/master'}. "
+        "Temel dalın adını yaz (komut satırında: --base)."
+    )
 
 
 def _diff_numstat(root: Path, base: str) -> dict[str, tuple[int, int]]:
@@ -201,7 +204,7 @@ def score_change(
     ]
     checklist = scoring.checklist
     if check:
-        checklist.append(f"Proje kontrolünü çalıştır: `{check}`")
+        checklist.append(f"Proje kontrolünü çalıştır: `{check.replace('{python}', 'python')}`")
     if scoring.direct:
         checklist.append(f"Etkilenen modülleri gözden geçir: {_few(scoring.direct)}")
     ai_commits = sum(c.ai_assisted for c in change.commits)

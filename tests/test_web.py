@@ -216,6 +216,10 @@ def test_budget_blocks_a_new_request(project, client_for):
     response = client.post(client.api("/ask"), json={"request": "add a length check to login"})
     assert response.status_code == 409
     assert "bütçe" in response.json()["detail"]
+    assert "Yine de çalıştır" in response.json()["detail"]  # the page's override button
+    forced = client.post(client.api("/ask"),
+                         json={"request": "add a length check to login", "over_budget": True})  # fmt: skip
+    assert forced.status_code == 200 and forced.json()["changes"]
 
 
 def test_commit_only_the_changed_files(project, client_for):
@@ -240,6 +244,21 @@ def test_commit_only_the_changed_files(project, client_for):
     assert files == ["app/auth.py"]
     status = subprocess.run([*git, "status", "--short"], capture_output=True, text=True).stdout
     assert "unrelated.txt" in status
+    # undoing now would leave the commit and a modified file: point to git revert instead
+    undo = client.post(client.api("/undo"))
+    assert undo.status_code == 409
+    assert f"git revert {commit.json()['commit']}" in undo.json()["detail"]
+    assert (
+        "app/auth.py"
+        not in subprocess.run([*git, "status", "--short"], capture_output=True, text=True).stdout
+    )
+    # a later change can be undone again
+    client2, _ = client_for(SELECTED, EDIT_UTIL.replace("app/util.py", "app/auth.py")
+                            .replace("        return 0", "    return len(password) >= 8")
+                            .replace("        return 1", "    return len(password) >= 10"))  # fmt: skip
+    run2 = ask(client2, "make the length check stricter")["run_id"]
+    assert client2.post(client2.api("/apply"), json={"run_id": run2}).status_code == 200
+    assert client2.post(client2.api("/undo")).json()["undone"] == ["app/auth.py"]
 
 
 def test_commit_outside_git_is_refused(client_for):
@@ -268,3 +287,47 @@ def test_parse_plan_handles_fences_and_skips_bad_items():
     )
     assert odd[0]["level"] == "medium"
     assert odd[0]["depends_on"] == []
+
+
+def test_pipeline_errors_reach_the_page_in_turkish(client_for):
+    client, _ = client_for("[]")  # the selector finds nothing
+    res = ask(client, "something unrelated")
+    assert res["error"].startswith("Değişecek dosya bulunamadı")
+
+
+def test_turkish_error_wording():
+    from tokenwise.services.messages import turkish_error
+
+    assert "proje kontrolü hâlâ geçmiyor (a → b denendi)" in turkish_error(
+        "the check still fails after trying a → b"
+    )
+    text = turkish_error("no applicable edit from a; last problem: SEARCH did not match")
+    assert "(a denendi)" in text and "Son sorun: SEARCH did not match." in text
+    assert "Son sorun" not in turkish_error("no applicable edit from a")
+    assert turkish_error("something else") == "something else" and turkish_error(None) is None
+
+
+def test_reopened_session_marks_proposals_that_can_no_longer_be_applied(client_for):
+    client, _ = client_for('{"intent": "change", "ready": true, "questions": []}', SELECTED, EDIT)
+    sid = client.post(client.api("/sessions"), json={"title": "t"}).json()["id"]
+    turn = client.post(client.api(f"/sessions/{sid}/messages"),
+                       json={"text": "add a length check to login", "intent": "change"}).json()  # fmt: skip
+    run_id = turn["messages"][-1]["data"]["run_id"]
+    proposal = lambda: client.get(client.api(f"/sessions/{sid}")).json()["messages"][-1]["data"]  # noqa: E731
+    assert proposal()["pending"] is True
+    client.post(client.api("/apply"), json={"run_id": run_id})
+    assert proposal()["pending"] is False
+
+
+def test_health_counts_open_findings_after_an_ignore(project, client_for):
+    (project / "app" / "util.py").write_text(
+        "import subprocess\n\n\ndef run(cmd):\n    return subprocess.call(cmd, shell=True)\n",
+        "utf-8")  # fmt: skip
+    client, _ = client_for()
+    client.post(client.api("/health/scan"))
+    before = client.get(client.api("/health")).json()
+    first = before["findings"][0]["id"]
+    client.post(client.api(f"/findings/{first}/status"), json={"status": "ignored"})
+    after = client.get(client.api("/health")).json()
+    assert after["open"] == before["open"] - 1
+    assert after["latest"]["open_findings"] == before["latest"]["open_findings"]  # snapshot as was

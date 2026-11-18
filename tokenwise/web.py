@@ -37,7 +37,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel
 
 from .config import Settings, load_settings
-from .editor import undo_last
+from .editor import committed_change, forget_undo, undo_last
 from .health import HealthStore, health_path, ranked, task_for, verify_fixed
 from .health import scan as run_scan
 from .history import load_history
@@ -58,6 +58,7 @@ from .services.changes import (
     require_budget,
 )
 from .services.chat import take_turn
+from .services.messages import turkish_error
 from .services.records import (  # noqa: F401 - parse_plan is part of this module's API
     load_plan,
     load_session,
@@ -73,6 +74,10 @@ from .services.records import (  # noqa: F401 - parse_plan is part of this modul
 from .textio import read_source
 
 STATIC_PAGE = Path(__file__).parent / "static" / "index.html"
+BUDGET_HINT = (
+    "Bütçeyi aşarak çalıştırmak için 'Yine de çalıştır' de "
+    "ya da tokenwise.toml'da budget_usd_week değerini artır."
+)
 INSTRUCTION_TOKENS = 300  # rough size of the editor's instructions, for the estimate
 
 
@@ -189,6 +194,7 @@ def create_app(roots, llm_factory=None, token: str = "") -> FastAPI:
 
         def propose(request: str, model: str, files: list[str]):
             run_id, result = helper.propose(request, model, files)
+            result.error = turkish_error(result.error)
             diff = "\n".join(c.diff for c in result.changes)
             if result.changes:
                 proj.pending[run_id] = result
@@ -246,10 +252,12 @@ def create_app(roots, llm_factory=None, token: str = "") -> FastAPI:
         with HealthStore(health_path(settings)) as store:
             snaps = store.snapshots(30)
             rows = store.open_findings()
+        open_count = len(rows)  # after ignores, unlike the last snapshot's count
         rows = ranked(rows, load_history(settings.root))[: max(1, min(limit, 500))]
         return {
             "latest": snaps[-1] if snaps else None,
             "trend": [{"ts": s["ts"], "overall": s["overall"]} for s in snaps],
+            "open": open_count,
             "findings": rows,
         }
 
@@ -346,8 +354,7 @@ def create_app(roots, llm_factory=None, token: str = "") -> FastAPI:
         proj = project(pid)
         with proj.lock:
             settings = load_settings(proj.root)
-            require_budget(settings, body.over_budget,
-                           "Yine de çalıştırmak için over_budget seçeneğini kullan.")  # fmt: skip
+            require_budget(settings, body.over_budget, BUDGET_HINT)
             if body.check:
                 settings.check = body.check
             propose = proposer(proj, assistant(settings))
@@ -370,8 +377,13 @@ def create_app(roots, llm_factory=None, token: str = "") -> FastAPI:
     def undo(pid: str) -> dict:
         proj = project(pid)
         with proj.lock:
-            undone = undo_last(load_settings(proj.root))
+            settings = load_settings(proj.root)
+            undone = undo_last(settings)
             if not undone:
+                sha = committed_change(settings)
+                if sha:
+                    raise HTTPException(409, f"Son değişiklik commit edildi ({sha}). "
+                                             f"Geri almak için: git revert {sha}")  # fmt: skip
                 raise HTTPException(404, "Geri alınacak değişiklik yok.")
             return {"undone": undone}
 
@@ -384,6 +396,7 @@ def create_app(roots, llm_factory=None, token: str = "") -> FastAPI:
             request, paths = proj.applied[body.run_id]
             done = commit_paths(proj.root, request, paths)
             del proj.applied[body.run_id]
+            forget_undo(load_settings(proj.root), paths, done["commit"])
             return done
 
     @app.post("/api/projects/{pid}/runs/{run_id}/review")
@@ -445,7 +458,13 @@ def create_app(roots, llm_factory=None, token: str = "") -> FastAPI:
 
     @app.get("/api/projects/{pid}/sessions/{session_id}")
     def get_session(pid: str, session_id: str) -> dict:
-        return load_session(load_settings(project(pid).root), session_id)
+        proj = project(pid)
+        session = load_session(load_settings(proj.root), session_id)
+        for m in session.get("messages", []):  # only proposals still in memory can be applied
+            data = m.get("data") if m.get("kind") == "proposal" else None
+            if data and data.get("run_id") is not None:
+                data["pending"] = data["run_id"] in proj.pending
+        return session
 
     @app.post("/api/projects/{pid}/sessions/{session_id}/messages")
     def turn(pid: str, session_id: str, body: TurnBody) -> dict:
@@ -454,7 +473,7 @@ def create_app(roots, llm_factory=None, token: str = "") -> FastAPI:
         with proj.lock:
             settings = load_settings(proj.root)
             session = load_session(settings, session_id)
-            require_budget(settings, body.over_budget)
+            require_budget(settings, body.over_budget, BUDGET_HINT)
             helper = assistant(settings)
             messages, intent = take_turn(helper, session, body.text, body.intent, body.files,
                                          body.model, proposer(proj, helper))  # fmt: skip
