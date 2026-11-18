@@ -963,7 +963,7 @@ async function refresh() {
   $("budget-text").className = limit && spent >= limit ? "err" : "muted";
   const costs = await api(P("/costs"));
   $("costs").textContent = "";
-  const names = { tokenwise: "Değişiklik", plan: "Plan", chat: "Sohbet" };
+  const names = { tokenwise: "Değişiklik", plan: "Plan", chat: "Sohbet", review: "İnceleme" };
   for (const [method, usd] of Object.entries(costs.by_method)) {
     $("costs").appendChild(el("div", "", `${names[method] || method}: $${usd.toFixed(4)}`));
   }
