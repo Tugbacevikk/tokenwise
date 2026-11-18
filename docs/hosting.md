@@ -119,7 +119,10 @@ Sunucu kiralamadan önce bütün akışı kendi makinende, geçici bir HTTPS tü
 | 6 | **Model ayarları** bölümüne Anthropic anahtarını gir, bulguda **AI ile düzelt** de | "Düzeltmeler" sekmesinde öneri ve diff görünür; kontrol "geçti" yazar |
 | 7 | **Onayla ve taslak PR aç** | GitHub'da `tokenwise/fix-1` dalından taslak PR açılır; `main` değişmez |
 | 8 | Bir bulguyu **Yok say**, sonra **Şimdi tara** | Bulgu "Yok sayılan" listesinde kalır, geri açılmaz |
-| 9 | App'i depodan kaldır | Panelde organization kaybolur; `docker compose exec db psql -U tokenwise -c "select count(*) from repositories"` komutu 0 döner |
+| 9 | Yeni bir dalda `app.py`'ye `def parse(x): return eval(x)` ekle, PR aç | PR yorumunda "RepoDoctor" bölümü ve **yeni** işaretli `eval()` bulgusu çıkar |
+| 10 | Panelde **PR riskleri → Ayrıntı → Agent'a yaptır**, sonra öneriyi onayla | Taslak PR, `main`'e değil bu PR'ın dalına açılır |
+| 11 | 7. adımdaki `tokenwise/fix-1` PR'ını GitHub'da birleştir | Düzeltme önce "Birleştirildi", `main` taraması bitince "Doğrulandı" olur |
+| 12 | App'i depodan kaldır | Panelde organization kaybolur; `docker compose exec db psql -U tokenwise -c "select count(*) from repositories"` komutu 0 döner |
 
 Bir adım beklendiği gibi çalışmazsa `docker compose logs worker --tail 50` çıktısını kaydet.
 
@@ -164,6 +167,8 @@ Worker müşteri kodunu (projenin kontrol komutunu) çalıştıran tek parçadı
 - **Sıra dışı olaylar:** Push ve PR işleri olayın zamanını taşır. Kuyrukta bekleyen iş her zaman en yeni girdiyi tutar. Daha eski bir olay geç gelirse atlanır.
 - **Aynı anda çalışmama:** Aynı deponun taramaları, aynı PR'ın raporu ve aynı düzeltme hiçbir zaman eşzamanlı çalışmaz.
 - **Kalp atışı (heartbeat):** Çalışan iş her dakika "hâlâ çalışıyorum" kaydı bırakır. 10 dakika boyunca kayıt gelmezse worker'ın düştüğü varsayılır ve iş kuyruğa geri döner.
+- **Kira numarası (lease):** Bir işi her alışta yeni bir numara verilir. İş başka bir worker'a verildiyse eski worker bunu kalp atışından ya da dışarıya dokunan her adımdan (push, PR açma, yorum, kayıt) hemen önceki kontrolden anlar ve durur; sonucunu da yazamaz. Kontrol ile GitHub çağrısı arasındaki kısa aralık için o çağrılar zaten tekrar güvenlidir.
+- **Ortak istek sınırı:** Dakikalık istek sınırları PostgreSQL'de sayılır; birden fazla web süreci aynı sayacı paylaşır. Veritabanına ulaşılamazsa her süreç kendi belleğinde sayar.
 - **Güvenli yeniden deneme:** Yeniden denenen bir iş aynı PR yorumunu ve aynı taslak PR'ı bulup kullanır; ikinci bir kopya açmaz.
 - **Güncel olmayan öneri:** Onay verildiğinde öneri, ana dalın o anki haliyle karşılaştırılır. Bu arada dosya değiştiyse düzeltme "Güncel değil" durumuna geçer ve yeni öneri istenir.
 - **Oturumlar:** Bir oturum 24 saat sürer. Üyelik her girişte GitHub'dan yeniden okunur. GitHub organization'ından çıkarılan biri en geç bir gün içinde erişimini kaybeder. "Tüm cihazlarda çıkış yap" seçeneği kişinin bütün oturumlarını kapatır.

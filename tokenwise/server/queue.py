@@ -6,6 +6,14 @@ never run at the same time: a worker skips such a job while another one is runni
 job's worker writes a heartbeat; a job without one for STALE_MINUTES lost its worker and goes
 back to the queue. Failed jobs are retried with a growing delay, then left as `failed`.
 
+Leases: every claim gets a new `lease` number. Heartbeats, finishing, failing and deferring
+only count while the job still has that lease, and a handler checks it (`holds`) right before
+anything it does outside the database (a push, a PR, a comment). A worker that lost its job
+(it stopped answering for STALE_MINUTES and the job was given to another) therefore stops
+before its next side effect instead of doing the work a second time; the side effects
+themselves are idempotent (force-push to the fix's own branch, find-or-create PR and comment)
+for the window between the check and the call.
+
 Input order: a job's payload may carry `event_at` (ISO time of the GitHub event). A queued job
 keeps the newest input, so a late, older webhook cannot replace a newer one."""
 
@@ -46,7 +54,8 @@ def claim(conn, worker: str) -> dict | None:
             fail(conn, job, f"worker {job['locked_by']} stopped answering")
         return conn.execute(
             "UPDATE jobs SET status = 'running', locked_by = %s, locked_at = now(),"
-            " started_at = now(), attempts = attempts + 1 WHERE id = ("
+            " started_at = now(), attempts = attempts + 1, lease = nextval('job_lease')"
+            " WHERE id = ("
             "  SELECT j.id FROM jobs j WHERE j.status = 'queued' AND j.run_after <= now()"
             "  AND NOT EXISTS (SELECT 1 FROM jobs r WHERE r.status = 'running'"
             "                  AND r.dedupe_key = j.dedupe_key)"
@@ -56,27 +65,43 @@ def claim(conn, worker: str) -> dict | None:
         ).fetchone()
 
 
-def heartbeat(conn, job_id: int, worker: str) -> bool:
+HELD = " AND status = 'running' AND lease IS NOT DISTINCT FROM %s"
+
+
+def heartbeat(conn, job_id: int, worker: str, lease: int | None = None) -> bool:
     """Tells the queue the job is still being worked on; False if it was taken away."""
     done = conn.execute(
-        "UPDATE jobs SET locked_at = now() WHERE id = %s AND status = 'running' AND locked_by = %s",
-        (job_id, worker),
+        "UPDATE jobs SET locked_at = now() WHERE id = %s AND status = 'running'"
+        " AND locked_by = %s AND (%s::bigint IS NULL OR lease = %s)",
+        (job_id, worker, lease, lease),
     )
     return done.rowcount > 0
 
 
-def finish(conn, job_id: int, worker: str | None = None) -> bool:
-    """Marks the job done; with `worker`, only if that worker still holds it."""
+def holds(conn, job: dict) -> bool:
+    """Whether this claim of the job is still the current one."""
+    row = conn.execute(
+        "SELECT 1 FROM jobs WHERE id = %s" + HELD, (job["id"], job.get("lease"))
+    ).fetchone()
+    return row is not None
+
+
+def finish(conn, job_id: int, worker: str | None = None, lease: int | None = None) -> bool:
+    """Marks the job done; with `worker` (and `lease`), only if that claim still holds it."""
     done = conn.execute(
         "UPDATE jobs SET status = 'done', finished_at = now(), error = NULL WHERE id = %s"
-        " AND (%s::text IS NULL OR (status = 'running' AND locked_by = %s))",
-        (job_id, worker, worker),
+        " AND (%s::text IS NULL OR (status = 'running' AND locked_by = %s"
+        "      AND (%s::bigint IS NULL OR lease = %s)))",
+        (job_id, worker, worker, lease, lease),
     )
     return done.rowcount > 0
 
 
 def fail(conn, job: dict, error: str, retry: bool = True) -> str:
-    """Puts the job back with a delay, or marks it failed after MAX_ATTEMPTS."""
+    """Puts the job back with a delay, or marks it failed after MAX_ATTEMPTS. Returns the new
+    status, or "lost" when this claim no longer holds the job (nothing is changed then)."""
+    if not holds(conn, job):
+        return "lost"
     if retry and job.get("dedupe_key"):
         newer = conn.execute(
             "SELECT id, payload FROM jobs WHERE dedupe_key = %s AND status = 'queued' AND id <> %s",
@@ -88,32 +113,36 @@ def fail(conn, job: dict, error: str, retry: bool = True) -> str:
                 conn.execute("UPDATE jobs SET payload = %s WHERE id = %s",
                              (Jsonb(job["payload"]), newer["id"]))  # fmt: skip
             conn.execute(
-                "UPDATE jobs SET status = 'done', finished_at = now(), error = %s WHERE id = %s",
-                (f"superseded by job {newer['id']}: {error}"[:4000], job["id"]),
+                "UPDATE jobs SET status = 'done', finished_at = now(), error = %s WHERE id = %s"
+                + HELD,
+                (f"superseded by job {newer['id']}: {error}"[:4000], job["id"], job.get("lease")),
             )
             return "superseded"
     if retry and job["attempts"] < MAX_ATTEMPTS:
         conn.execute(
             "UPDATE jobs SET status = 'queued', locked_by = NULL, locked_at = NULL, error = %s,"
-            " run_after = now() + make_interval(secs => %s) WHERE id = %s",
-            (error[:4000], 30 * 2 ** job["attempts"], job["id"]),
+            " run_after = now() + make_interval(secs => %s) WHERE id = %s" + HELD,
+            (error[:4000], 30 * 2 ** job["attempts"], job["id"], job.get("lease")),
         )
         return "queued"
     conn.execute(
-        "UPDATE jobs SET status = 'failed', finished_at = now(), error = %s WHERE id = %s",
-        (error[:4000], job["id"]),
+        "UPDATE jobs SET status = 'failed', finished_at = now(), error = %s WHERE id = %s" + HELD,
+        (error[:4000], job["id"], job.get("lease")),
     )
     return "failed"
 
 
-def defer(conn, job: dict, seconds: int, reason: str) -> None:
+def defer(conn, job: dict, seconds: int, reason: str) -> bool:
     """Puts the job back to run later without using up one of its attempts (the job did
     nothing wrong: GitHub asked us to wait)."""
-    conn.execute(
-        "UPDATE jobs SET status = 'queued', locked_by = NULL, locked_at = NULL, error = %s,"
-        " attempts = GREATEST(attempts - 1, 0), run_after = now() + make_interval(secs => %s)"
-        " WHERE id = %s AND status = 'running'",
-        (reason[:4000], seconds, job["id"]),
+    return (
+        conn.execute(
+            "UPDATE jobs SET status = 'queued', locked_by = NULL, locked_at = NULL, error = %s,"
+            " attempts = GREATEST(attempts - 1, 0), run_after = now() + make_interval(secs => %s)"
+            " WHERE id = %s" + HELD,
+            (reason[:4000], seconds, job["id"], job.get("lease")),
+        ).rowcount
+        > 0
     )
 
 

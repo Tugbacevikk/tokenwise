@@ -44,26 +44,42 @@ class JobError(Exception):
         self.fix_status = fix_status
 
 
+class LeaseLost(Exception):
+    """The job was given to another worker (this one stopped answering for too long)."""
+
+
 class Heartbeat:
     """Keeps a running job's lock fresh from a side thread with its own connection, so a
-    long job is not mistaken for a dead worker."""
+    long job is not mistaken for a dead worker. When the queue says the job is no longer
+    ours, `lost` is set and the handler stops at its next `Worker.fence()`."""
 
     def __init__(self, connect: Callable, job_id: int, worker: str,
-                 every: float = queue.HEARTBEAT_SECONDS) -> None:  # fmt: skip
+                 every: float = queue.HEARTBEAT_SECONDS,
+                 lease: int | None = None) -> None:  # fmt: skip
         self.connect, self.job_id, self.worker, self.every = connect, job_id, worker, every
+        self.lease = lease
         self.stop = threading.Event()
+        self.lost = threading.Event()
         self.thread = threading.Thread(target=self._run, daemon=True)
 
     def _run(self) -> None:
-        try:
-            conn = self.connect()
-        except Exception:  # noqa: BLE001 - no heartbeat is safer than a crashed job
-            return
+        conn = None
         try:
             while not self.stop.wait(self.every):
-                queue.heartbeat(conn, self.job_id, self.worker)
+                try:
+                    conn = conn or self.connect()
+                    if not queue.heartbeat(conn, self.job_id, self.worker, self.lease):
+                        log.warning("job %s: lease lost, stopping at the next step", self.job_id)
+                        self.lost.set()
+                        return
+                except Exception:  # noqa: BLE001 - a dropped connection: try again next beat
+                    log.warning("job %s: heartbeat failed", self.job_id, exc_info=True)
+                    if conn is not None:
+                        conn.close()
+                    conn = None
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
 
     def __enter__(self) -> Heartbeat:
         self.thread.start()
@@ -90,6 +106,8 @@ class Worker:
         self.server = server
         self.name = name or f"{socket.gethostname()}-{id(self):x}"
         self.model_factory = model_factory or (lambda s, key: make_model(s, key, server))
+        self.job: dict | None = None  # the job being run, and its heartbeat
+        self.beat: Heartbeat | None = None
         self.handlers = {
             "sync": self.sync,
             "scan": self.scan,
@@ -106,18 +124,25 @@ class Worker:
         if job is None:
             return None
         handler = self.handlers.get(job["kind"])
+        self.job = job
         try:
             if handler is None:
                 raise JobError(f"unknown job kind {job['kind']}")
-            with Heartbeat(self.connect, job["id"], self.name):
+            with Heartbeat(self.connect, job["id"], self.name, lease=job.get("lease")) as beat:
+                self.beat = beat
                 handler(job["payload"])
+        except LeaseLost:
+            log.warning("job %s was given to another worker; this run stopped", job["id"])
+            job["status"] = "lost"
         except RateLimited as exc:
             log.info("job %s waits %s s for GitHub's rate limit", job["id"], exc.wait)
-            queue.defer(self.conn, job, exc.wait, str(exc))
-            job["status"] = "deferred"
+            job["status"] = (
+                "deferred" if queue.defer(self.conn, job, exc.wait, str(exc)) else "lost"
+            )
         except JobError as exc:
             job["status"] = queue.fail(self.conn, job, mask(str(exc)), retry=False)
-            self._job_failed(job, str(exc), exc.fix_status)
+            if job["status"] != "lost":
+                self._job_failed(job, str(exc), exc.fix_status)
         except Exception as exc:  # noqa: BLE001 - one job must never stop the worker
             message = mask(f"{type(exc).__name__}: {exc}")
             log.warning("job %s failed: %s\n%s", job["id"], message, mask(traceback.format_exc()))
@@ -125,9 +150,22 @@ class Worker:
             if job["status"] == "failed":
                 self._job_failed(job, message)
         else:
-            queue.finish(self.conn, job["id"], self.name)
-            job["status"] = "done"
+            done = queue.finish(self.conn, job["id"], self.name, job.get("lease"))
+            job["status"] = "done" if done else "lost"
+        finally:
+            self.job = self.beat = None
+        if job["status"] == "lost":
+            log.warning("job %s: result not recorded, another worker holds it", job["id"])
         return job
+
+    def fence(self) -> None:
+        """Called right before a step with an effect outside this worker (GitHub, the
+        database rows other users see): stops the handler if the job is no longer ours."""
+        job, beat = self.job, self.beat
+        if job is None:  # a handler called directly (tests)
+            return
+        if (beat is not None and beat.lost.is_set()) or not queue.holds(self.conn, job):
+            raise LeaseLost(f"job {job['id']}")
 
     def run_forever(self, idle: float = 2.0) -> None:
         while True:
@@ -161,6 +199,7 @@ class Worker:
     def sync(self, payload: dict) -> None:
         org = self._org(payload["org_id"])
         listed = self.github.installation_repos(org["installation_id"])
+        self.fence()
         keep = set()
         for item in listed:
             keep.add(item["id"])
@@ -196,6 +235,7 @@ class Worker:
             started = time.monotonic()
             graph = build_graph(settings)
             found, tools = collect(settings, graph)
+            self.fence()
             db.record_scan(self.conn, repo["id"], sha, found, len(graph.files),
                            round(time.monotonic() - started, 2), {"builtin", *tools.ran},
                            payload.get("scan_type", "push"))  # fmt: skip
@@ -234,6 +274,7 @@ class Worker:
         data = report.to_dict()
         data["markdown"] = to_markdown(report)
         same_repo = bool(payload.get("same_repo"))
+        self.fence()
         old = db.save_pr(self.conn, repo["id"], number, sha, data, payload.get("event_at"),
                          payload.get("head_ref"), same_repo)  # fmt: skip
         link = f"{self.server.public_url}/#/repos/{repo['id']}"
@@ -242,6 +283,7 @@ class Worker:
             body += ("\nBu işleri Agent'a yaptırmak için panelde **PR riskleri** sekmesinden "
                      "isteyin; sonuç onayınızla bu dala taslak PR olarak gelir.\n")  # fmt: skip
         body += f"\n[Tokenwise panelinde aç]({link}) · commit `{sha[:12]}`\n"
+        self.fence()
         comment_id = self.github.upsert_comment(
             repo["installation_id"], repo["full_name"], number, body,
             old["comment_id"] if old else None,
@@ -285,6 +327,7 @@ class Worker:
             "lines": data["lines"],
             "cost_usd": data["cost_usd"],
         }
+        self.fence()
         if not result.ok:
             db.update_fix(self.conn, fix["id"], status="failed", summary=summary, base_sha=sha,
                           error=mask(result.error or "no change"))  # fmt: skip
@@ -333,6 +376,7 @@ class Worker:
                 f"Co-Authored-By: {BOT_NAME} <{BOT_EMAIL}>\n"
             )
             _commit(root, [c.path for c in changes], message)
+            self.fence()
             self.github.push_branch(repo["installation_id"], repo["full_name"], root, branch)
         summary = fix["summary"] or {}
         check = summary.get("check") or {}
@@ -351,6 +395,7 @@ class Worker:
             f"−{(summary.get('lines') or {}).get('removed', 0)} satır\n\n"
             "Merge kararı sizde: Tokenwise hedef dala hiçbir zaman kendisi yazmaz."
         )
+        self.fence()
         try:
             url = self.github.create_draft_pr(repo["installation_id"], repo["full_name"], branch,
                                               target, title, body)  # fmt: skip
@@ -358,6 +403,7 @@ class Worker:
             raise
         except GitHubError as exc:
             raise JobError(str(exc)) from exc
+        self.fence()
         db.update_fix(self.conn, fix["id"], status="pushed", branch=branch, pr_url=url, error=None)
 
 
