@@ -111,6 +111,11 @@ class RiskReport:
         return [f for f in self.findings if f["new"]]
 
     @property
+    def worse_findings(self) -> list[dict]:
+        """Findings that were already there and this change made worse."""
+        return [f for f in self.findings if f.get("worse")]
+
+    @property
     def score(self) -> int:
         return round(sum(s.points for s in self.signals))
 
@@ -198,40 +203,59 @@ def assess(settings: Settings, base: str = "") -> RiskReport:
     return report
 
 
-def _fingerprints(path: str, source: str) -> set[str]:
+# measures a finding can grow on, and how a report names them
+MEASURES = {"complexity": "karmaşıklık", "lines": "satır", "count": "not", "fan_in": "bağımlı"}
+
+
+def _file_findings(path: str, source: str) -> dict:
     """The findings decided by the file alone (not by the rest of the project)."""
-    return {f.fingerprint for f in code_findings(path, source) + text_findings(path, source)}
+    return {f.fingerprint: f for f in code_findings(path, source) + text_findings(path, source)}
 
 
 def changed_findings(settings: Settings, graph: Graph, base: str, changed: list[str]) -> list[dict]:
-    """RepoDoctor's built-in findings in the changed files, each marked `new` when the change
-    brought it in: a file-level finding is new if the base version of the file did not have it;
-    a project-level one (missing tests, an import cycle) if the file itself is new."""
+    """RepoDoctor's built-in findings in the changed files. `new`: the change brought it in (a
+    file-level finding the base version of the file did not have; a project-level one, such as
+    missing tests or an import cycle, in a new file). `worse`: it was already there and grew
+    (higher severity, or a larger measure such as complexity)."""
     wanted = set(changed)
     head = [f for f in analyze(settings, graph) if f.file in wanted] if wanted else []
-    before: dict[str, set[str] | None] = {}  # path -> its findings at the base; None: new file
-    now: dict[str, set[str]] = {}
+    before: dict[str, dict | None] = {}  # path -> its findings at the base; None: new file
+    now: dict[str, dict] = {}
     for path in {f.file for f in head}:
         old = git(settings.root, "show", f"{base}:{path}")
-        before[path] = None if old is None else _fingerprints(path, old)
-        now[path] = _fingerprints(path, read_source(settings.root / path, strict=False))
+        before[path] = None if old is None else _file_findings(path, old)
+        now[path] = _file_findings(path, read_source(settings.root / path, strict=False))
     order = {s: i for i, s in enumerate(SEVERITIES)}
     rows = [_finding_row(f, before[f.file], now[f.file]) for f in head]
-    return sorted(rows, key=lambda r: (not r["new"], order[r["severity"]], r["file"], r["line"]))
+    return sorted(rows, key=lambda r: (not r["new"], not r["worse"], order[r["severity"]],
+                                       r["file"], r["line"]))  # fmt: skip
 
 
-def _finding_row(f, before: set[str] | None, now: set[str]) -> dict:
+def _finding_row(f, before: dict | None, now: dict) -> dict:
+    worse = None
     if before is None:  # a new file: everything in it is new
         new = True
     elif f.fingerprint in now:
         new = f.fingerprint not in before
+        worse = None if new else _worse(before[f.fingerprint], f)
     else:  # decided by the whole project, and the file was already there
         new = False
     return {
         "rule": f.rule, "category": f.category, "severity": f.severity, "file": f.file,
         "line": f.line, "title": f.title, "detail": f.detail, "data": f.data,
-        "fingerprint": f.fingerprint, "new": new,
+        "fingerprint": f.fingerprint, "new": new, "worse": worse,
     }  # fmt: skip
+
+
+def _worse(old, new) -> str | None:
+    """How a finding grew, in words ("karmaşıklık 24 → 31"), or None if it did not."""
+    order = {s: i for i, s in enumerate(SEVERITIES)}
+    grown = [f"{label} {old.data[key]} → {new.data[key]}" for key, label in MEASURES.items()
+             if isinstance(old.data.get(key), int) and isinstance(new.data.get(key), int)
+             and new.data[key] > old.data[key]]  # fmt: skip
+    if order[new.severity] < order[old.severity]:
+        grown.insert(0, f"önem {old.severity} → {new.severity}")
+    return ", ".join(grown) or None
 
 
 def attach_findings(report: RiskReport, findings: list[dict]) -> None:
@@ -245,6 +269,13 @@ def attach_findings(report: RiskReport, findings: list[dict]) -> None:
             f"Bu değişiklik {len(report.new_findings)} yeni RepoDoctor bulgusu getiriyor"
             + (f" ({len(serious)} orta/yüksek önemde)" if serious else "")
             + ": gözden geçir"
+        )
+    if report.worse_findings:
+        report.checklist.append(
+            f"Var olan {len(report.worse_findings)} bulguyu ağırlaştırıyor: "
+            + "; ".join(
+                f"{f['title'].split(' (')[0]} ({f['worse']})" for f in report.worse_findings[:3]
+            )  # fmt: skip
         )
     for f in serious[:2]:
         task = task_for({**f, "id": None})
@@ -471,20 +502,31 @@ def to_markdown(report: RiskReport) -> str:
     return "\n".join(lines) + "\n"
 
 
+def finding_mark(f: dict) -> str:
+    """The short label a report puts before a finding: "yeni", "kötüleşti: …" or nothing."""
+    if f["new"]:
+        return "yeni"
+    return f"kötüleşti: {f['worse']}" if f.get("worse") else ""
+
+
+def _counts(report: RiskReport) -> str:
+    new, worse = report.new_findings, report.worse_findings
+    counts = [f"{len(new)} yeni" if new else "Yeni bulgu yok"]
+    counts += [f"{len(worse)} kötüleşti"] if worse else []
+    counts.append(f"{len(report.findings) - len(new) - len(worse)} önceden vardı")
+    return " · ".join(counts)
+
+
 def _findings_markdown(report: RiskReport) -> list[str]:
     if not report.findings:
         return []
-    new = report.new_findings
-    old = len(report.findings) - len(new)
-    lines = ["", "### RepoDoctor: değişen dosyalardaki bulgular", ""]
-    lines.append(f"{len(new)} yeni · {old} önceden vardı" if new
-                 else f"Yeni bulgu yok · {old} önceden vardı")  # fmt: skip
-    lines.append("")
-    pool = new or report.findings
-    shown = pool[: 8 if new else 5]
+    new, worse = report.new_findings, report.worse_findings
+    lines = ["", "### RepoDoctor: değişen dosyalardaki bulgular", "", _counts(report), ""]
+    pool = new + worse or report.findings
+    shown = pool[: 8 if new or worse else 5]
     for f in shown:
         where = f"{f['file']}:{f['line']}" if f["line"] else f["file"]
-        mark = "**yeni** · " if f["new"] else ""
+        mark = f"**{finding_mark(f)}** · " if finding_mark(f) else ""
         lines.append(f"- {mark}`{f['severity']}` {f['title']} (`{where}`)")
     if len(pool) > len(shown):
         lines.append(f"- … ve {len(pool) - len(shown)} tane daha")

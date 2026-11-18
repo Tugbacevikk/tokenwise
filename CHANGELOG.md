@@ -7,6 +7,9 @@ a change that breaks existing use bumps major.
 
 First release.
 
+- PR reports also mark findings the change made worse ("kötüleşti: karmaşıklık 24 → 31"):
+  same finding, higher severity or a larger measure (complexity, lines, TODOs, fan-in).
+
 - `tokenwise server selftest`: checks a running setup from outside, the way GitHub and a
   browser reach it: public address, a signed webhook ping, the GitHub App's webhook URL
   (catches an old tunnel address), the sign-in redirect and a worker taking a job.

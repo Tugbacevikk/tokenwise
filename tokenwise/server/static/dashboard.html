@@ -292,13 +292,15 @@ async function showPull(number) {
   const r = pr.report || {};
   const findings = r.findings || [];
   const fresh = findings.filter(f => f.new);
-  const shown = (fresh.length ? fresh : findings).slice(0, 10);
+  const worse = findings.filter(f => !f.new && f.worse);
+  const focus = fresh.concat(worse);
+  const shown = (focus.length ? focus : findings).slice(0, 10);
   const sugs = r.suggestions || [];
   $("pr-detail").innerHTML = `<div class="card"><h3>PR #${number} · ${pr.score}/100 (${esc(pr.level)})</h3>
     <p class="muted">${esc(pr.head_ref || "")} · ${(r.changed || []).length} kaynak dosya · +${r.lines_added ?? 0} −${r.lines_removed ?? 0}</p>
     <h3>RepoDoctor: değişen dosyalar</h3>
-    ${findings.length ? `<p class="muted">${fresh.length} yeni · ${findings.length - fresh.length} önceden vardı</p><table>
-      ${shown.map(f => `<tr><td><span class="sev ${f.severity}">${f.severity}</span></td><td>${f.new ? "<b>yeni</b> · " : ""}${esc(f.title)}</td>
+    ${findings.length ? `<p class="muted">${fresh.length} yeni · ${worse.length} kötüleşti · ${findings.length - fresh.length - worse.length} önceden vardı</p><table>
+      ${shown.map(f => `<tr><td><span class="sev ${f.severity}">${f.severity}</span></td><td>${f.new ? "<b>yeni</b> · " : f.worse ? `<b>kötüleşti</b> (${esc(f.worse)}) · ` : ""}${esc(f.title)}</td>
         <td><code>${esc(f.file)}${f.line ? ":" + f.line : ""}</code></td></tr>`).join("")}</table>` : `<p class="muted">Değişen dosyalarda bulgu yok.</p>`}
     <h3 style="margin-top:14px">Agent'ın üstlenebileceği işler</h3>
     ${sugs.length ? (pr.same_repo ? sugs.map((s, i) => `<div class="row" style="margin:6px 0"><button class="primary" data-sug="${i}">Agent'a yaptır</button><span>${esc(s.title)}</span></div>`).join("")

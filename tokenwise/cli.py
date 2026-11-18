@@ -713,11 +713,13 @@ def risk(
 
 
 def _print_findings(report) -> None:
-    """RepoDoctor findings in the changed files: the new ones, else the ones already there."""
-    for f in (report.new_findings or report.findings)[:8]:
+    """RepoDoctor findings in the changed files: new and worse ones, else those already there."""
+    from .release import finding_mark
+
+    for f in (report.new_findings + report.worse_findings or report.findings)[:8]:
         where = f"{f['file']}:{f['line']}" if f["line"] else f["file"]
-        new = "[bold]yeni[/] " if f["new"] else ""
-        console.print(f"RepoDoctor: {new}{f['severity']} {escape(f['title'])} ({where})")
+        mark = f"[bold]{escape(finding_mark(f))}[/] " if finding_mark(f) else ""
+        console.print(f"RepoDoctor: {mark}{f['severity']} {escape(f['title'])} ({where})")
 
 
 @app.command()

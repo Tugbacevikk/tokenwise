@@ -825,10 +825,14 @@ async function runRisk() {
     box.appendChild(table);
     if (r.findings && r.findings.length) {
       const fresh = r.findings.filter((f) => f.new);
-      box.appendChild(el("div", "file", `RepoDoctor: değişen dosyalarda ${fresh.length} yeni, ${r.findings.length - fresh.length} eski bulgu`));
-      for (const f of (fresh.length ? fresh : r.findings).slice(0, 8)) {
+      const worse = r.findings.filter((f) => !f.new && f.worse);
+      const older = r.findings.length - fresh.length - worse.length;
+      box.appendChild(el("div", "file", `RepoDoctor: değişen dosyalarda ${fresh.length} yeni, ${worse.length} kötüleşen, ${older} eski bulgu`));
+      const focus = fresh.concat(worse);
+      for (const f of (focus.length ? focus : r.findings).slice(0, 8)) {
         const row = el("div", "finding");
-        row.append(el("span", `sev ${f.severity}`, f.severity), el("span", "", (f.new ? "yeni · " : "") + f.title));
+        const mark = f.new ? "yeni · " : f.worse ? `kötüleşti (${f.worse}) · ` : "";
+        row.append(el("span", `sev ${f.severity}`, f.severity), el("span", "", mark + f.title));
         row.appendChild(el("div", "muted", f.line ? `${f.file}:${f.line}` : f.file));
         box.appendChild(row);
       }
