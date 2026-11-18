@@ -331,3 +331,30 @@ def test_checklist_shows_the_check_without_the_python_placeholder(py_repo):
     (py_repo / "pkg" / "new.py").write_text("def a():\n    return 1\n", "utf-8")
     report = assess(Settings(root=py_repo, check="{python} -m pytest -q"), "main")
     assert "Proje kontrolünü çalıştır: `python -m pytest -q`" in report.checklist
+
+
+def test_report_lists_findings_the_change_brings_in(py_repo):
+    from tokenwise.release import to_markdown
+
+    commit(py_repo, "old eval", {"pkg/api.py": (py_repo / "pkg" / "api.py").read_text("utf-8")
+                                 + "\n\ndef old(x):\n    return eval(x)\n"})  # fmt: skip
+    sh(py_repo, "branch", "-f", "main")  # main already had the eval in api.py
+    sh(py_repo, "checkout", "-q", "-B", "feature")
+    util = py_repo / "pkg" / "util.py"
+    util.write_text(util.read_text("utf-8") + "\n\ndef run(cmd):\n    return eval(cmd)\n", "utf-8")
+    api = py_repo / "pkg" / "api.py"
+    api.write_text(api.read_text("utf-8") + "\n# touched\n", "utf-8")
+    report = assess(Settings(root=py_repo), "main")
+    by_file = {(f["file"], f["rule"]): f["new"] for f in report.findings}
+    assert by_file[("pkg/util.py", "dynamic-code")] is True  # this change wrote it
+    assert by_file[("pkg/api.py", "dynamic-code")] is False  # it was already on main
+    assert report.findings[0]["new"] is True  # new ones first
+    assert any("yeni RepoDoctor bulgusu" in item for item in report.checklist)
+    assert any(s["title"].startswith("Yeni bulguyu düzelt") and "pkg/util.py" in s["files"]
+               for s in report.suggestions)  # fmt: skip
+    text = to_markdown(report)
+    assert "### RepoDoctor" in text and "**yeni**" in text
+
+
+def test_report_without_changed_sources_has_no_findings(py_repo):
+    assert assess(Settings(root=py_repo), "main").findings == []

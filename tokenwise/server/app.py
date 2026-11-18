@@ -48,6 +48,7 @@ STATE_COOKIE = "tw_state"
 # Membership is read from GitHub at sign-in, so a session lasts one day: someone removed
 # from a GitHub organization loses access here within a day, without storing their token.
 SESSION_HOURS = 24
+FIX_BRANCH_PREFIX = "tokenwise/fix-"  # the worker pushes each approved fix to its own branch
 PR_ACTIONS = ("opened", "synchronize", "reopened", "ready_for_review", "edited")
 # Requests per client address per minute. Webhooks are signed and not limited here.
 RATE_LIMITS = (("/auth/", 20), ("/api/", 240))
@@ -179,6 +180,12 @@ def create_app(
             raise HTTPException(404, "Bulunamadı.")
         need_org(conn, user, repo["org_id"], owner)
         return repo
+
+    def need_model_key(conn, repo: dict) -> None:
+        org = conn.execute("SELECT model_key FROM organizations WHERE id = %s",
+                           (repo["org_id"],)).fetchone()  # fmt: skip
+        if not org or org["model_key"] is None:
+            raise HTTPException(400, "Önce organization ayarlarından bir model anahtarı girin.")
 
     def need_fix(conn, user: dict, fix_id: int, owner: bool = False) -> tuple[dict, dict]:
         fix = db.fix(conn, fix_id)
@@ -387,10 +394,7 @@ def create_app(
         finding = db.finding(conn, repo_id, finding_id)
         if finding is None or finding["status"] != "open":
             raise HTTPException(404, "Açık bir bulgu bulunamadı.")
-        org = conn.execute("SELECT model_key FROM organizations WHERE id = %s",
-                           (repo["org_id"],)).fetchone()  # fmt: skip
-        if not org or org["model_key"] is None:
-            raise HTTPException(400, "Önce organization ayarlarından bir model anahtarı girin.")
+        need_model_key(conn, repo)
         with db.tx(conn):
             fix, created = db.create_fix(conn, repo_id, finding_id, user["id"])
             if created:
@@ -414,6 +418,40 @@ def create_app(
     def repo_pulls(repo_id: int, user=Depends(current_user), conn=Depends(get_conn)) -> list:
         need_repo(conn, user, repo_id)
         return db.pull_requests(conn, repo_id)
+
+    @app.get("/api/repos/{repo_id}/pulls/{number}")
+    def repo_pull(repo_id: int, number: int, user=Depends(current_user),
+                  conn=Depends(get_conn)) -> dict:  # fmt: skip
+        need_repo(conn, user, repo_id)
+        pr = db.pull_request(conn, repo_id, number)
+        if pr is None:
+            raise HTTPException(404, "Bu PR için rapor yok.")
+        return pr
+
+    @app.post("/api/repos/{repo_id}/pulls/{number}/suggestions/{index}/fix")
+    def suggestion_fix(repo_id: int, number: int, index: int, user=Depends(current_user),
+                       conn=Depends(get_conn)) -> dict:  # fmt: skip
+        """Asks the Agent to do one of the PR report's suggestions on the PR's own branch; the
+        result is proposed for approval and goes into a draft PR against that branch."""
+        repo = need_repo(conn, user, repo_id)
+        pr = db.pull_request(conn, repo_id, number)
+        suggestions = ((pr or {}).get("report") or {}).get("suggestions") or []
+        if not 0 <= index < len(suggestions):
+            raise HTTPException(404, "Bu öneri bulunamadı.")
+        if not pr["same_repo"] or not pr["head_ref"]:
+            raise HTTPException(400, "Bu PR başka bir depodan (fork) geliyor; Agent onun dalına "
+                                     "yazamaz.")  # fmt: skip
+        need_model_key(conn, repo)
+        item = suggestions[index]
+        task = {"title": str(item.get("title", ""))[:200], "request": str(item["request"]),
+                "files": [str(f) for f in item.get("files", [])][:3]}  # fmt: skip
+        with db.tx(conn):
+            fix, created = db.create_task_fix(conn, repo_id, number, pr["head_ref"], task,
+                                              user["id"])  # fmt: skip
+            if created:
+                queue.enqueue(conn, "fix_propose", {"fix_id": fix["id"]}, repo["org_id"],
+                              dedupe_key=f"fix:{fix['id']}")  # fmt: skip
+        return fix
 
     @app.get("/api/fixes/{fix_id}")
     def get_fix(fix_id: int, user=Depends(current_user), conn=Depends(get_conn)) -> dict:
@@ -487,9 +525,14 @@ def handle_event(conn, event: str, payload: dict) -> dict:
                                 org["id"], dedupe_key=f"scan:{repo_id}")  # fmt: skip
         return {"job": job}
     if event == "pull_request":
+        pr = payload["pull_request"]
+        head_ref = (pr.get("head") or {}).get("ref") or ""
+        if action == "closed" and head_ref.startswith(FIX_BRANCH_PREFIX):
+            repo = db.repo_by_github_id(conn, repository["id"])
+            fix = repo and db.fix_pr_closed(conn, repo["id"], head_ref, bool(pr.get("merged")))
+            return {"fix": fix["id"], "status": fix["status"]} if fix else {"ignored": "closed"}
         if action not in PR_ACTIONS:
             return {"ignored": action}
-        pr = payload["pull_request"]
         if action == "edited" and "base" not in (payload.get("changes") or {}):
             return {"ignored": "edited without a new base"}
         if pr.get("state") != "open":
@@ -500,7 +543,9 @@ def handle_event(conn, event: str, payload: dict) -> dict:
             job = queue.enqueue(
                 conn, "pr_risk",
                 {"repository_id": repo_id, "number": pr["number"], "head_sha": pr["head"]["sha"],
-                 "base_ref": pr["base"]["ref"], "event_at": event_time(pr.get("updated_at"))},
+                 "base_ref": pr["base"]["ref"], "event_at": event_time(pr.get("updated_at")),
+                 "head_ref": head_ref,
+                 "same_repo": ((pr["head"].get("repo") or {}).get("id") == repository["id"])},
                 org["id"], dedupe_key=f"pr:{repo_id}:{pr['number']}",
             )  # fmt: skip
         return {"job": job}

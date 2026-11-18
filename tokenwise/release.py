@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from .analyzers import code_findings
+from .analyzers import SEVERITIES, analyze, code_findings, text_findings
 from .callgraph import FunctionImpact, describe, function_impact
 from .config import Settings
 from .graph import Graph, build_graph
@@ -103,6 +103,12 @@ class RiskReport:
     ai_commits: int
     commits: int
     functions: list[dict] = field(default_factory=list)  # changed functions, callers, tests
+    # RepoDoctor findings in the changed files; "new" ones this change brought in
+    findings: list[dict] = field(default_factory=list)
+
+    @property
+    def new_findings(self) -> list[dict]:
+        return [f for f in self.findings if f["new"]]
 
     @property
     def score(self) -> int:
@@ -187,7 +193,68 @@ def assess(settings: Settings, base: str = "") -> RiskReport:
         commits=load_history(root, revision=f"{merge_base}..HEAD").commits,
         functions=function_impact(root, graph, merge_base, changed, read),
     )
-    return score_change(change, merge_base[:12], load_weights(settings), settings.check)
+    report = score_change(change, merge_base[:12], load_weights(settings), settings.check)
+    attach_findings(report, changed_findings(settings, graph, merge_base, changed))
+    return report
+
+
+def _fingerprints(path: str, source: str) -> set[str]:
+    """The findings decided by the file alone (not by the rest of the project)."""
+    return {f.fingerprint for f in code_findings(path, source) + text_findings(path, source)}
+
+
+def changed_findings(settings: Settings, graph: Graph, base: str, changed: list[str]) -> list[dict]:
+    """RepoDoctor's built-in findings in the changed files, each marked `new` when the change
+    brought it in: a file-level finding is new if the base version of the file did not have it;
+    a project-level one (missing tests, an import cycle) if the file itself is new."""
+    wanted = set(changed)
+    head = [f for f in analyze(settings, graph) if f.file in wanted] if wanted else []
+    before: dict[str, set[str] | None] = {}  # path -> its findings at the base; None: new file
+    now: dict[str, set[str]] = {}
+    for path in {f.file for f in head}:
+        old = git(settings.root, "show", f"{base}:{path}")
+        before[path] = None if old is None else _fingerprints(path, old)
+        now[path] = _fingerprints(path, read_source(settings.root / path, strict=False))
+    order = {s: i for i, s in enumerate(SEVERITIES)}
+    rows = [_finding_row(f, before[f.file], now[f.file]) for f in head]
+    return sorted(rows, key=lambda r: (not r["new"], order[r["severity"]], r["file"], r["line"]))
+
+
+def _finding_row(f, before: set[str] | None, now: set[str]) -> dict:
+    if before is None:  # a new file: everything in it is new
+        new = True
+    elif f.fingerprint in now:
+        new = f.fingerprint not in before
+    else:  # decided by the whole project, and the file was already there
+        new = False
+    return {
+        "rule": f.rule, "category": f.category, "severity": f.severity, "file": f.file,
+        "line": f.line, "title": f.title, "detail": f.detail, "data": f.data,
+        "fingerprint": f.fingerprint, "new": new,
+    }  # fmt: skip
+
+
+def attach_findings(report: RiskReport, findings: list[dict]) -> None:
+    """Adds the findings to the report, its checklist and the Agent's suggestions."""
+    from .health import task_for
+
+    report.findings = findings
+    serious = [f for f in report.new_findings if f["severity"] in ("high", "medium")]
+    if report.new_findings:
+        report.checklist.append(
+            f"Bu değişiklik {len(report.new_findings)} yeni RepoDoctor bulgusu getiriyor"
+            + (f" ({len(serious)} orta/yüksek önemde)" if serious else "")
+            + ": gözden geçir"
+        )
+    for f in serious[:2]:
+        task = task_for({**f, "id": None})
+        if task["intent"] != "change":
+            continue
+        report.suggestions.append({
+            "title": f"Yeni bulguyu düzelt: {f['title']}",
+            "request": task["request"],
+            "files": task["files"],
+        })  # fmt: skip
 
 
 def score_change(
@@ -392,6 +459,7 @@ def to_markdown(report: RiskReport) -> str:
     if report.checklist:
         lines += ["", "### Yayın öncesi kontrol listesi", ""]
         lines += [f"- [ ] {item}" for item in report.checklist]
+    lines += _findings_markdown(report)
     if report.suggestions:
         lines += ["", "### Agent'ın üstlenebileceği işler", ""]
         lines += [f'- {s["title"]}: `tokenwise ask "{s["request"]}"`' for s in report.suggestions]
@@ -401,3 +469,23 @@ def to_markdown(report: RiskReport) -> str:
         "Ağırlıklar deneysel başlangıç değerleridir._",
     ]
     return "\n".join(lines) + "\n"
+
+
+def _findings_markdown(report: RiskReport) -> list[str]:
+    if not report.findings:
+        return []
+    new = report.new_findings
+    old = len(report.findings) - len(new)
+    lines = ["", "### RepoDoctor: değişen dosyalardaki bulgular", ""]
+    lines.append(f"{len(new)} yeni · {old} önceden vardı" if new
+                 else f"Yeni bulgu yok · {old} önceden vardı")  # fmt: skip
+    lines.append("")
+    pool = new or report.findings
+    shown = pool[: 8 if new else 5]
+    for f in shown:
+        where = f"{f['file']}:{f['line']}" if f["line"] else f["file"]
+        mark = "**yeni** · " if f["new"] else ""
+        lines.append(f"- {mark}`{f['severity']}` {f['title']} (`{where}`)")
+    if len(pool) > len(shown):
+        lines.append(f"- … ve {len(pool) - len(shown)} tane daha")
+    return lines

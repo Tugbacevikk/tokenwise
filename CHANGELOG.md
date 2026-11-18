@@ -7,6 +7,13 @@ a change that breaks existing use bumps major.
 
 First release.
 
+- The three modules feed each other. A ReleaseGuard report (CLI, local page, PR comment)
+  lists the RepoDoctor findings in the changed files and marks the ones the change brought
+  in; serious new ones become Agent suggestions. On the hosted dashboard a PR's suggestions
+  go to the Agent with one click, and its draft PR targets the PR's own branch (not for
+  forks). A merged fix PR is marked "merged", and "verified" once the next scan of the
+  default branch no longer finds its finding. Database schema version 3.
+
 - Local web page, after a full browser walkthrough: the side-by-side diff switch redraws
   existing diffs; the last chat reopens after a reload and proposals that can no longer be
   applied say so; plan threads can be skipped, marked done or reopened, and plans edited by

@@ -226,15 +226,27 @@ async function renderFindings(status = "open") {
 }
 
 const FIX_STATUS = { queued: "Hazırlanıyor", proposed: "Onay bekliyor", approved: "Push ediliyor", pushed: "Taslak PR açıldı",
-                     failed: "Başarısız", rejected: "Reddedildi", stale: "Güncel değil" };
+                     failed: "Başarısız", rejected: "Reddedildi", stale: "Güncel değil",
+                     merged: "Birleştirildi", verified: "Doğrulandı", closed: "PR kapatıldı" };
+
+function fixState(f) {
+  const label = FIX_STATUS[f.status] || f.status;
+  if (f.status === "verified") return `${label}: bulgu artık görünmüyor`;
+  if (f.status === "merged" && f.finding_id) {
+    const scanned = state.repo.repository.last_scan_at;
+    return scanned && new Date(scanned) > new Date(f.updated_at || f.created_at) && f.finding_status === "open"
+      ? `${label}, ama bulgu hâlâ görünüyor` : `${label}; sonraki tarama doğrulayacak`;
+  }
+  return label;
+}
 
 async function renderFixes() {
   const id = state.repo.repository.id;
   const rows = await api(`/api/repos/${id}/fixes`);
   $("tab").innerHTML = `<div class="card"><h3>Düzeltmeler</h3>${rows.length ? `<table>
     <tr><th>#</th><th>Durum</th><th>İstek</th><th></th></tr>
-    ${rows.map(f => `<tr><td>${f.id}</td><td class="${f.status === "failed" ? "err" : f.status === "pushed" ? "ok" : ""}">${FIX_STATUS[f.status] || f.status}</td>
-      <td>${esc(f.summary?.request || "")}${f.error ? `<div class="err muted">${esc(f.error)}</div>` : ""}</td>
+    ${rows.map(f => `<tr><td>${f.id}</td><td class="${f.status === "failed" ? "err" : ["pushed", "merged", "verified"].includes(f.status) ? "ok" : ""}">${esc(fixState(f))}</td>
+      <td>${esc(f.summary?.request || f.task?.request || "")}${f.pr_number ? `<div class="muted">PR #${f.pr_number} önerisi · hedef <code>${esc(f.target_ref || "")}</code></div>` : ""}${f.error ? `<div class="err muted">${esc(f.error)}</div>` : ""}</td>
       <td>${f.pr_url ? `<a href="${esc(f.pr_url)}" target="_blank" rel="noopener">PR</a>` : `<button data-show="${f.id}">Aç</button>`}</td></tr>`).join("")}
     </table>` : `<p class="muted">Henüz düzeltme istenmedi.</p>`}</div><div id="fix-detail"></div>`;
   document.querySelectorAll("[data-show]").forEach(b => b.onclick = () => showFix(+b.dataset.show));
@@ -254,7 +266,7 @@ async function showFix(fixId) {
     <p class="muted">Model <code>${esc(f.summary?.model || "-")}</code> · kontrol ${checkText} · $${(f.summary?.cost_usd ?? 0).toFixed(4)}</p>
     ${(f.changes || []).map(c => `<div><code><b>${esc(c.path)}</b></code>${diffHtml(c.diff)}</div>`).join("")}
     ${f.status === "proposed" ? (owner ? `<div class="row" style="margin-top:12px"><button class="primary" id="approve">Onayla ve taslak PR aç</button>
-      <button id="reject">Reddet</button></div><p class="muted">Değişiklik <code>tokenwise/fix-${f.id}</code> dalına gider; ana dala yazılmaz.</p>`
+      <button id="reject">Reddet</button></div><p class="muted">Değişiklik <code>tokenwise/fix-${f.id}</code> dalına gider ve <code>${esc(f.target_ref || state.repo.repository.default_branch || "ana dal")}</code> dalına taslak PR olarak açılır; hedef dala doğrudan yazılmaz.</p>`
       : `<p class="muted">Onay organization sahibinde.</p>`) : ""}</div>`;
   if ($("approve")) {
     $("approve").onclick = async () => { try { await api(`/api/fixes/${f.id}/approve`, { method: "POST" }); toast("Onaylandı, taslak PR açılıyor."); renderFixes(); } catch (e) { toast(e.message); } };
@@ -264,11 +276,43 @@ async function showFix(fixId) {
 
 async function renderPulls() {
   const rows = await api(`/api/repos/${state.repo.repository.id}/pulls`);
-  $("tab").innerHTML = `<div class="card"><h3>PR riskleri</h3>${rows.length ? `<table><tr><th>PR</th><th>Risk</th><th>Commit</th><th>Güncellendi</th></tr>
+  $("tab").innerHTML = `<div class="card"><h3>PR riskleri</h3>${rows.length ? `<table><tr><th>PR</th><th>Risk</th><th>Yeni bulgu</th><th>Commit</th><th>Güncellendi</th><th></th></tr>
     ${rows.map(p => `<tr><td><a href="https://github.com/${esc(state.repo.repository.full_name)}/pull/${p.number}" target="_blank" rel="noopener">#${p.number}</a></td>
       <td class="${p.level === "yüksek" ? "err" : p.level === "orta" ? "warn" : "ok"}">${p.score}/100 (${esc(p.level)})</td>
-      <td><code>${esc(p.head_sha.slice(0, 7))}</code></td><td class="muted">${new Date(p.updated_at).toLocaleString("tr-TR")}</td></tr>`).join("")}
-    </table>` : `<p class="muted">Henüz PR yok. Her PR'a risk raporu yorum olarak yazılır.</p>`}</div>`;
+      <td class="${p.new_findings ? "warn" : "muted"}">${p.new_findings}</td>
+      <td><code>${esc(p.head_sha.slice(0, 7))}</code></td><td class="muted">${new Date(p.updated_at).toLocaleString("tr-TR")}</td>
+      <td><button data-pr="${p.number}">Ayrıntı${p.suggestions ? ` · ${p.suggestions} iş` : ""}</button></td></tr>`).join("")}
+    </table>` : `<p class="muted">Henüz PR yok. Her PR'a risk raporu yorum olarak yazılır.</p>`}</div><div id="pr-detail"></div>`;
+  document.querySelectorAll("[data-pr]").forEach(b => b.onclick = () => showPull(+b.dataset.pr));
+}
+
+async function showPull(number) {
+  const id = state.repo.repository.id;
+  const pr = await api(`/api/repos/${id}/pulls/${number}`);
+  const r = pr.report || {};
+  const findings = r.findings || [];
+  const fresh = findings.filter(f => f.new);
+  const shown = (fresh.length ? fresh : findings).slice(0, 10);
+  const sugs = r.suggestions || [];
+  $("pr-detail").innerHTML = `<div class="card"><h3>PR #${number} · ${pr.score}/100 (${esc(pr.level)})</h3>
+    <p class="muted">${esc(pr.head_ref || "")} · ${(r.changed || []).length} kaynak dosya · +${r.lines_added ?? 0} −${r.lines_removed ?? 0}</p>
+    <h3>RepoDoctor: değişen dosyalar</h3>
+    ${findings.length ? `<p class="muted">${fresh.length} yeni · ${findings.length - fresh.length} önceden vardı</p><table>
+      ${shown.map(f => `<tr><td><span class="sev ${f.severity}">${f.severity}</span></td><td>${f.new ? "<b>yeni</b> · " : ""}${esc(f.title)}</td>
+        <td><code>${esc(f.file)}${f.line ? ":" + f.line : ""}</code></td></tr>`).join("")}</table>` : `<p class="muted">Değişen dosyalarda bulgu yok.</p>`}
+    <h3 style="margin-top:14px">Agent'ın üstlenebileceği işler</h3>
+    ${sugs.length ? (pr.same_repo ? sugs.map((s, i) => `<div class="row" style="margin:6px 0"><button class="primary" data-sug="${i}">Agent'a yaptır</button><span>${esc(s.title)}</span></div>`).join("")
+        + `<p class="muted">Agent önerisini hazırlar; onaylarsanız <code>${esc(pr.head_ref || "")}</code> dalına taslak PR açılır.</p>`
+      : `<p class="muted">Bu PR başka bir depodan (fork) geliyor; Agent onun dalına yazamaz.</p>`) : `<p class="muted">Öneri yok.</p>`}
+  </div>`;
+  document.querySelectorAll("[data-sug]").forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    try {
+      await api(`/api/repos/${id}/pulls/${number}/suggestions/${b.dataset.sug}/fix`, { method: "POST" });
+      toast("Agent bir değişiklik hazırlıyor. Düzeltmeler sekmesinden izleyin.");
+      state.tab = "fixes"; renderRepo();
+    } catch (e) { toast(e.message); b.disabled = false; }
+  });
 }
 
 async function renderSettings() {
