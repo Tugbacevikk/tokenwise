@@ -14,7 +14,12 @@ from ..pricing import format_usd
 from ..textio import read_source
 from . import ServiceError
 
-SPEND_METHODS = ("tokenwise", "plan", "chat")  # ledger methods the web page counts as spending
+SPEND_METHODS = (
+    "tokenwise",
+    "plan",
+    "chat",
+    "review",
+)  # ledger methods the web page counts as spending
 
 
 @dataclass

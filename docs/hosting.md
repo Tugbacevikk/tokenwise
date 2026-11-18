@@ -89,7 +89,7 @@ Sunucu kiralamadan önce bütün akışı kendi makinende, geçici bir HTTPS tü
 
 1. **Tünel aç:** `cloudflared tunnel --url http://localhost:8000` komutunu çalıştır. Çıktıdaki `https://….trycloudflare.com` adresini not et. Tünel her açılışta yeni bir adres verir; adres değişirse 2. ve 3. adımları tekrarla.
 2. **GitHub App oluştur:** 1. bölümdeki ayarlarla bir "Tokenwise Deneme" App'i oluştur. Callback ve webhook adreslerine tünel adresini yaz.
-3. **Ayarları gir:** `.env.server` dosyasında `TOKENWISE_PUBLIC_URL` olarak tünel adresini yaz. Sonra `docker compose up -d --build` ve `docker compose exec worker tokenwise server doctor` komutlarını çalıştır. Bütün satırlar `ok` olmalı.
+3. **Ayarları gir:** `.env.server` dosyasında `TOKENWISE_PUBLIC_URL` olarak tünel adresini yaz. Sonra `docker compose up -d --build` ve `docker compose exec worker tokenwise server doctor` komutlarını çalıştır. Bütün satırlar `ok` olmalı. Ardından `docker compose exec web tokenwise server selftest` komutunu çalıştır. Bu komut sunucuya GitHub'ın geldiği yoldan, yani tünel adresinden ulaşır. Tünelin, webhook'un, App'teki webhook adresinin, girişin ve worker'ın çalıştığını kontrol eder. Tünel adresi değiştiğinde ilk bunu çalıştır.
 4. **Deneme deposu oluştur:** Kendi hesabında boş, özel bir depo aç ve içine `app.py` adlı bir dosya ekle:
 
    ```python

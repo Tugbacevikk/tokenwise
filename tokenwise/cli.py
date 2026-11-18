@@ -713,11 +713,13 @@ def risk(
 
 
 def _print_findings(report) -> None:
-    """RepoDoctor findings in the changed files: the new ones, else the ones already there."""
-    for f in (report.new_findings or report.findings)[:8]:
+    """RepoDoctor findings in the changed files: new and worse ones, else those already there."""
+    from .release import finding_mark
+
+    for f in (report.new_findings + report.worse_findings or report.findings)[:8]:
         where = f"{f['file']}:{f['line']}" if f["line"] else f["file"]
-        new = "[bold]yeni[/] " if f["new"] else ""
-        console.print(f"RepoDoctor: {new}{f['severity']} {escape(f['title'])} ({where})")
+        mark = f"[bold]{escape(finding_mark(f))}[/] " if finding_mark(f) else ""
+        console.print(f"RepoDoctor: {mark}{f['severity']} {escape(f['title'])} ({where})")
 
 
 @app.command()
@@ -890,6 +892,28 @@ def server_doctor() -> None:
     if not ready(checks):
         raise typer.Exit(1)
     console.print("[green]Hazır.[/] GitHub App'i bir hesaba kurup ilk taramayı bekleyin.")
+
+
+@server_app.command("selftest")
+def server_selftest() -> None:
+    """Check a running setup from outside: public address, webhook, the GitHub App's webhook
+    URL, sign-in and a worker taking jobs. Run it after `docker compose up`."""
+    from .server.config import ServerConfig
+    from .server.selftest import run_selftest
+
+    try:
+        server = ServerConfig.from_env()
+    except (KeyError, ValueError, OSError) as exc:
+        _fail(f"Settings are incomplete: {str(exc).rstrip('.')}. See docs/hosting.md.")
+    console.print(f"{server.public_url} deneniyor (worker için en çok 45 saniye)…")
+    checks = run_selftest(server)
+    table = Table(show_header=False, box=None)
+    for c in checks:
+        table.add_row("[green]ok[/]" if c.ok else "[red]HATA[/]", c.name, escape(c.detail))
+    console.print(table)
+    if not all(c.ok for c in checks):
+        raise typer.Exit(1)
+    console.print("[green]Dışarıdan her şey yolunda.[/] GitHub App'i deneme deposuna kurabilirsin.")
 
 
 if __name__ == "__main__":

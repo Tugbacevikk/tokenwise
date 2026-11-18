@@ -151,6 +151,8 @@ def test_review_reads_the_proposal(chat_for):
     run_id = send("şifre kontrolü ekle")["messages"][1]["run_id"]
     review = client.post(f"/api/projects/{pid}/runs/{run_id}/review").json()
     assert review["review"] == "- Şifre boşlukları da sayıyor."
+    by_method = client.get(f"/api/projects/{pid}/costs").json()["by_method"]
+    assert by_method["review"] > 0  # its own line, not under chat
     assert client.post(f"/api/projects/{pid}/runs/999/review").status_code == 404
 
 

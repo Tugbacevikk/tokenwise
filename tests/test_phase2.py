@@ -358,3 +358,34 @@ def test_report_lists_findings_the_change_brings_in(py_repo):
 
 def test_report_without_changed_sources_has_no_findings(py_repo):
     assert assess(Settings(root=py_repo), "main").findings == []
+
+
+def _branchy(n: int) -> str:
+    body = "".join(f"    if x == {i}:\n        return {i}\n" for i in range(n))
+    return f"def pick(x):\n{body}    return -1\n"
+
+
+def test_report_marks_findings_the_change_made_worse(py_repo):
+    from tokenwise.release import to_markdown
+
+    commit(py_repo, "branchy", {"pkg/pick.py": _branchy(12)})
+    sh(py_repo, "branch", "-f", "main")
+    sh(py_repo, "checkout", "-q", "-B", "feature")
+    (py_repo / "pkg" / "pick.py").write_text(_branchy(16), "utf-8")
+    report = assess(Settings(root=py_repo), "main")
+    (row,) = [f for f in report.findings if f["rule"] == "high-complexity"]
+    assert row["new"] is False and row["worse"] == "karmaşıklık 13 → 17"
+    assert report.worse_findings == [row]
+    assert any("ağırlaştırıyor" in item and "13 → 17" in item for item in report.checklist)
+    text = to_markdown(report)
+    assert "1 kötüleşti" in text and "**kötüleşti: karmaşıklık 13 → 17**" in text
+
+
+def test_an_unchanged_finding_is_neither_new_nor_worse(py_repo):
+    commit(py_repo, "branchy", {"pkg/pick.py": _branchy(12)})
+    sh(py_repo, "branch", "-f", "main")
+    sh(py_repo, "checkout", "-q", "-B", "feature")
+    (py_repo / "pkg" / "pick.py").write_text(_branchy(12) + "\n# note\n", "utf-8")
+    (row,) = [f for f in assess(Settings(root=py_repo), "main").findings
+              if f["rule"] == "high-complexity"]  # fmt: skip
+    assert row["new"] is False and row["worse"] is None

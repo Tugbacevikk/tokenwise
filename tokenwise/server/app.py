@@ -20,6 +20,10 @@ that change something must carry the `X-Tokenwise: 1` header, which a cross-site
   POST /api/repos/{id}/scan                    scan the default branch now
   GET  /api/repos/{id}/fixes | /pulls
   GET  /api/fixes/{id};  POST /api/fixes/{id}/approve | /reject   (owner)
+  GET  /api/orgs/{id}/export                   everything stored for the organization (owner)
+  DELETE /api/me                               forget this person (sessions, memberships)
+
+Removing the GitHub App deletes the organization and everything under it.
 """
 
 from __future__ import annotations
@@ -356,6 +360,23 @@ def create_app(
         return {"user": {"id": user["id"], "login": user["login"]},
                 "orgs": db.orgs_of(conn, user["id"])}  # fmt: skip
 
+    @app.delete("/api/me")
+    def forget_me(user=Depends(current_user), conn=Depends(get_conn)) -> Response:
+        """Deletes this person's record. Signing in again creates a new one."""
+        with db.tx(conn):
+            db.delete_user(conn, user["id"])
+        response = JSONResponse({"deleted": user["login"]})
+        response.delete_cookie(session_cookie, path="/", secure=secure, httponly=True)
+        return response
+
+    @app.get("/api/orgs/{org_id}/export")
+    def export(org_id: int, user=Depends(current_user), conn=Depends(get_conn)) -> Response:
+        need_org(conn, user, org_id, owner=True)
+        data = json.dumps(db.export_org(conn, org_id), default=str, ensure_ascii=False, indent=1)
+        name = f'attachment; filename="tokenwise-org-{org_id}.json"'
+        return Response(data, media_type="application/json",
+                        headers={"Content-Disposition": name})  # fmt: skip
+
     @app.put("/api/orgs/{org_id}/model")
     def set_model(org_id: int, body: ModelBody, user=Depends(current_user),
                   conn=Depends(get_conn)) -> dict:  # fmt: skip
@@ -530,72 +551,103 @@ def create_app(
 
 
 def handle_event(conn, event: str, payload: dict) -> dict:
-    installation = (payload.get("installation") or {}).get("id")
-    action = payload.get("action", "")
+    """Turns a GitHub event into database changes and queued jobs; never calls GitHub."""
     if event == "ping":
         return {"ok": True}
     if event == "installation":
-        if action == "deleted":
-            with db.tx(conn):
-                gone = db.delete_org(conn, installation)
-            return {"deleted": gone}
-        if action in ("created", "new_permissions_accepted", "unsuspend"):
-            return _install(conn, payload)
-        return {"ignored": action}
+        return _on_installation(conn, payload)
+    installation = (payload.get("installation") or {}).get("id")
     org = db.org_by_installation(conn, installation) if installation else None
     if org is None:
         return {"ignored": "unknown installation"}
     if event == "installation_repositories":
-        with db.tx(conn):
-            for item in payload.get("repositories_removed", []):
-                db.remove_repo(conn, item["id"])
-            added = []
-            for item in payload.get("repositories_added", []):
-                added.append(db.upsert_repo(conn, org["id"], item["id"], item["full_name"]))
-            if added:
-                queue.enqueue(conn, "sync", {"org_id": org["id"]}, org["id"],
-                              dedupe_key=f"sync:{org['id']}")  # fmt: skip
-        return {"added": len(added)}
+        return _on_repositories(conn, org, payload)
     repository = payload.get("repository") or {}
-    if not repository:
+    handler = {"push": _on_push, "pull_request": _on_pull_request}.get(event)
+    if not repository or handler is None:
         return {"ignored": event}
-    branch = repository.get("default_branch") or "main"
-    if event == "push":
-        if payload.get("deleted") or payload.get("ref") != f"refs/heads/{branch}":
-            return {"ignored": "not the default branch"}
+    return handler(conn, org, repository, payload)
+
+
+def _on_installation(conn, payload: dict) -> dict:
+    action = payload.get("action", "")
+    if action == "deleted":
         with db.tx(conn):
-            repo_id = db.upsert_repo(conn, org["id"], repository["id"], repository["full_name"],
-                                     branch)  # fmt: skip
-            job = queue.enqueue(conn, "scan", {"repository_id": repo_id, "ref": payload["after"],
-                                               "event_at": event_time(repository.get("pushed_at"))},
-                                org["id"], dedupe_key=f"scan:{repo_id}")  # fmt: skip
-        return {"job": job}
-    if event == "pull_request":
-        pr = payload["pull_request"]
-        head_ref = (pr.get("head") or {}).get("ref") or ""
-        if action == "closed" and head_ref.startswith(FIX_BRANCH_PREFIX):
-            repo = db.repo_by_github_id(conn, repository["id"])
-            fix = repo and db.fix_pr_closed(conn, repo["id"], head_ref, bool(pr.get("merged")))
-            return {"fix": fix["id"], "status": fix["status"]} if fix else {"ignored": "closed"}
-        if action not in PR_ACTIONS:
-            return {"ignored": action}
-        if action == "edited" and "base" not in (payload.get("changes") or {}):
-            return {"ignored": "edited without a new base"}
-        if pr.get("state") != "open":
-            return {"ignored": "closed"}
-        with db.tx(conn):
-            repo_id = db.upsert_repo(conn, org["id"], repository["id"], repository["full_name"],
-                                     branch)  # fmt: skip
-            job = queue.enqueue(
-                conn, "pr_risk",
-                {"repository_id": repo_id, "number": pr["number"], "head_sha": pr["head"]["sha"],
-                 "base_ref": pr["base"]["ref"], "event_at": event_time(pr.get("updated_at")),
-                 "head_ref": head_ref,
-                 "same_repo": ((pr["head"].get("repo") or {}).get("id") == repository["id"])},
-                org["id"], dedupe_key=f"pr:{repo_id}:{pr['number']}",
-            )  # fmt: skip
-        return {"job": job}
-    return {"ignored": event}
+            gone = db.delete_org(conn, (payload.get("installation") or {}).get("id"))
+        return {"deleted": gone}
+    if action in ("created", "new_permissions_accepted", "unsuspend"):
+        return _install(conn, payload)
+    return {"ignored": action}
+
+
+def _on_repositories(conn, org: dict, payload: dict) -> dict:
+    with db.tx(conn):
+        for item in payload.get("repositories_removed", []):
+            db.remove_repo(conn, item["id"])
+        added = [db.upsert_repo(conn, org["id"], item["id"], item["full_name"])
+                 for item in payload.get("repositories_added", [])]  # fmt: skip
+        if added:
+            queue.enqueue(conn, "sync", {"org_id": org["id"]}, org["id"],
+                          dedupe_key=f"sync:{org['id']}")  # fmt: skip
+    return {"added": len(added)}
+
+
+def _default_branch(repository: dict) -> str:
+    return repository.get("default_branch") or "main"
+
+
+def _on_push(conn, org: dict, repository: dict, payload: dict) -> dict:
+    branch = _default_branch(repository)
+    if payload.get("deleted") or payload.get("ref") != f"refs/heads/{branch}":
+        return {"ignored": "not the default branch"}
+    with db.tx(conn):
+        repo_id = db.upsert_repo(conn, org["id"], repository["id"], repository["full_name"],
+                                 branch)  # fmt: skip
+        job = queue.enqueue(conn, "scan", {"repository_id": repo_id, "ref": payload["after"],
+                                           "event_at": event_time(repository.get("pushed_at"))},
+                            org["id"], dedupe_key=f"scan:{repo_id}")  # fmt: skip
+    return {"job": job}
+
+
+def _on_pull_request(conn, org: dict, repository: dict, payload: dict) -> dict:
+    action = payload.get("action", "")
+    pr = payload["pull_request"]
+    head_ref = (pr.get("head") or {}).get("ref") or ""
+    if action == "closed" and head_ref.startswith(FIX_BRANCH_PREFIX):
+        return _on_fix_pr_closed(conn, repository, head_ref, bool(pr.get("merged")))
+    skip = _pr_skip_reason(action, pr, payload)
+    if skip:
+        return {"ignored": skip}
+    with db.tx(conn):
+        repo_id = db.upsert_repo(conn, org["id"], repository["id"], repository["full_name"],
+                                 _default_branch(repository))  # fmt: skip
+        job = queue.enqueue(
+            conn, "pr_risk",
+            {"repository_id": repo_id, "number": pr["number"], "head_sha": pr["head"]["sha"],
+             "base_ref": pr["base"]["ref"], "event_at": event_time(pr.get("updated_at")),
+             "head_ref": head_ref,
+             "same_repo": ((pr["head"].get("repo") or {}).get("id") == repository["id"])},
+            org["id"], dedupe_key=f"pr:{repo_id}:{pr['number']}",
+        )  # fmt: skip
+    return {"job": job}
+
+
+def _pr_skip_reason(action: str, pr: dict, payload: dict) -> str:
+    """Why a pull_request event needs no new report ("" when it does)."""
+    if action not in PR_ACTIONS:
+        return action
+    if action == "edited" and "base" not in (payload.get("changes") or {}):
+        return "edited without a new base"
+    if pr.get("state") != "open":
+        return "closed"
+    return ""
+
+
+def _on_fix_pr_closed(conn, repository: dict, branch: str, merged: bool) -> dict:
+    """A draft PR Tokenwise opened for a fix was merged or closed on GitHub."""
+    repo = db.repo_by_github_id(conn, repository["id"])
+    fix = repo and db.fix_pr_closed(conn, repo["id"], branch, merged)
+    return {"fix": fix["id"], "status": fix["status"]} if fix else {"ignored": "closed"}
 
 
 def event_time(value) -> str:

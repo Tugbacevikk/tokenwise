@@ -89,6 +89,7 @@
   <div id="logoutbox" hidden style="margin-top:auto; display:flex; flex-direction:column; gap:6px">
     <button id="logout-btn">Çıkış yap</button>
     <button id="logout-all-btn" class="muted">Tüm cihazlarda çıkış yap</button>
+    <button id="forget-btn" class="muted">Hesabımı sil</button>
   </div>
 </aside>
 <main id="main"></main>
@@ -122,6 +123,11 @@ async function boot() {
   $("logoutbox").hidden = false;
   $("logout-btn").onclick = async () => { await api("/auth/logout", { method: "POST" }); location.reload(); };
   $("logout-all-btn").onclick = async () => { await api("/auth/logout-all", { method: "POST" }).catch(() => {}); location.reload(); };
+  $("forget-btn").onclick = async () => {
+    if (!confirm("GitHub kullanıcı adın, oturumların ve üyeliklerin silinsin mi? Organization'ın verileri kalır; onlar için App'i kaldırmak gerekir.")) return;
+    await api("/api/me", { method: "DELETE" }).catch((e) => toast(e.message));
+    location.reload();
+  };
   if (!state.me.orgs.length) {
     $("main").innerHTML = `<div class="empty"><h2>Henüz kurulum yok</h2><p class="muted">Tokenwise GitHub
       uygulamasını bir hesaba ya da organization'a kurun; sonra bu sayfaya dönün.</p></div>`;
@@ -292,13 +298,15 @@ async function showPull(number) {
   const r = pr.report || {};
   const findings = r.findings || [];
   const fresh = findings.filter(f => f.new);
-  const shown = (fresh.length ? fresh : findings).slice(0, 10);
+  const worse = findings.filter(f => !f.new && f.worse);
+  const focus = fresh.concat(worse);
+  const shown = (focus.length ? focus : findings).slice(0, 10);
   const sugs = r.suggestions || [];
   $("pr-detail").innerHTML = `<div class="card"><h3>PR #${number} · ${pr.score}/100 (${esc(pr.level)})</h3>
     <p class="muted">${esc(pr.head_ref || "")} · ${(r.changed || []).length} kaynak dosya · +${r.lines_added ?? 0} −${r.lines_removed ?? 0}</p>
     <h3>RepoDoctor: değişen dosyalar</h3>
-    ${findings.length ? `<p class="muted">${fresh.length} yeni · ${findings.length - fresh.length} önceden vardı</p><table>
-      ${shown.map(f => `<tr><td><span class="sev ${f.severity}">${f.severity}</span></td><td>${f.new ? "<b>yeni</b> · " : ""}${esc(f.title)}</td>
+    ${findings.length ? `<p class="muted">${fresh.length} yeni · ${worse.length} kötüleşti · ${findings.length - fresh.length - worse.length} önceden vardı</p><table>
+      ${shown.map(f => `<tr><td><span class="sev ${f.severity}">${f.severity}</span></td><td>${f.new ? "<b>yeni</b> · " : f.worse ? `<b>kötüleşti</b> (${esc(f.worse)}) · ` : ""}${esc(f.title)}</td>
         <td><code>${esc(f.file)}${f.line ? ":" + f.line : ""}</code></td></tr>`).join("")}</table>` : `<p class="muted">Değişen dosyalarda bulgu yok.</p>`}
     <h3 style="margin-top:14px">Agent'ın üstlenebileceği işler</h3>
     ${sugs.length ? (pr.same_repo ? sugs.map((s, i) => `<div class="row" style="margin:6px 0"><button class="primary" data-sug="${i}">Agent'a yaptır</button><span>${esc(s.title)}</span></div>`).join("")
@@ -326,7 +334,11 @@ async function renderSettings() {
       <label>Modeller, ucuzdan pahalıya, virgülle</label><input id="models" value="${esc((o.models || []).join(", "))}" placeholder="claude-haiku-5-5, claude-sonnet-5-5">
       <label>API anahtarı ${o.has_model_key ? "(kayıtlı; değiştirmek için yazın)" : ""}</label><input id="key" type="password" autocomplete="off">
       <div style="margin-top:12px"><button class="primary" id="save">Kaydet</button></div></div>
-    <div class="card"><h3>Son 30 gün</h3><p>${usage.calls} model çağrısı · ${usage.input} girdi + ${usage.output} çıktı token · $${Number(usage.cost_usd).toFixed(4)}</p></div>`;
+    <div class="card"><h3>Son 30 gün</h3><p>${usage.calls} model çağrısı · ${usage.input} girdi + ${usage.output} çıktı token · $${Number(usage.cost_usd).toFixed(4)}</p></div>
+    <div class="card"><h3>Veriler</h3><p class="muted">Bu organization için saklanan her şey (depolar, taramalar, bulgular, PR raporları,
+      düzeltmeler, model kullanımı; API anahtarı hariç) tek bir JSON dosyası olarak indirilir. Hepsini silmek için GitHub App'i
+      kaldırmanız yeterli: kaldırıldığı anda organization ve altındaki her kayıt silinir.</p>
+      <a href="/api/orgs/${o.id}/export"><button>Verileri indir (JSON)</button></a></div>`;
   $("provider").value = o.model_provider || "anthropic";
   $("save").onclick = async () => {
     try {

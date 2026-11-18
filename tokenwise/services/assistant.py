@@ -98,7 +98,7 @@ class Assistant:
     def review(self, request: str, diff: str) -> dict:
         model = self.middle_model
         reply = self._ask(model, REVIEW_SYSTEM, f"İstek: {request}\n\nDiff:\n{diff[:12000]}",
-                          600, "reviewer", label=request)  # fmt: skip
+                          600, "reviewer", method="review", label=request)  # fmt: skip
         return {
             "review": reply.text.strip(),
             "model": model,
