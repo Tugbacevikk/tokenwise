@@ -20,6 +20,10 @@ that change something must carry the `X-Tokenwise: 1` header, which a cross-site
   POST /api/repos/{id}/scan                    scan the default branch now
   GET  /api/repos/{id}/fixes | /pulls
   GET  /api/fixes/{id};  POST /api/fixes/{id}/approve | /reject   (owner)
+  GET  /api/orgs/{id}/export                   everything stored for the organization (owner)
+  DELETE /api/me                               forget this person (sessions, memberships)
+
+Removing the GitHub App deletes the organization and everything under it.
 """
 
 from __future__ import annotations
@@ -355,6 +359,23 @@ def create_app(
     def me(user=Depends(current_user), conn=Depends(get_conn)) -> dict:
         return {"user": {"id": user["id"], "login": user["login"]},
                 "orgs": db.orgs_of(conn, user["id"])}  # fmt: skip
+
+    @app.delete("/api/me")
+    def forget_me(user=Depends(current_user), conn=Depends(get_conn)) -> Response:
+        """Deletes this person's record. Signing in again creates a new one."""
+        with db.tx(conn):
+            db.delete_user(conn, user["id"])
+        response = JSONResponse({"deleted": user["login"]})
+        response.delete_cookie(session_cookie, path="/", secure=secure, httponly=True)
+        return response
+
+    @app.get("/api/orgs/{org_id}/export")
+    def export(org_id: int, user=Depends(current_user), conn=Depends(get_conn)) -> Response:
+        need_org(conn, user, org_id, owner=True)
+        data = json.dumps(db.export_org(conn, org_id), default=str, ensure_ascii=False, indent=1)
+        name = f'attachment; filename="tokenwise-org-{org_id}.json"'
+        return Response(data, media_type="application/json",
+                        headers={"Content-Disposition": name})  # fmt: skip
 
     @app.put("/api/orgs/{org_id}/model")
     def set_model(org_id: int, body: ModelBody, user=Depends(current_user),

@@ -170,8 +170,25 @@ class Worker:
 
     def run_forever(self, idle: float = 2.0) -> None:
         while True:
+            self.maybe_prune()
             if self.run_once() is None:
                 time.sleep(idle)
+
+    def maybe_prune(self, every: float = 3600) -> dict | None:
+        """About once an hour, deletes records past their keeping period (db.RETENTION_DAYS).
+        Several workers may do it at once; the deletes do not conflict."""
+        now = time.monotonic()
+        if now - getattr(self, "_pruned_at", -every) < every:
+            return None
+        self._pruned_at = now
+        try:
+            done = db.prune_old_records(self.conn)
+        except Exception:  # noqa: BLE001 - housekeeping must never stop the worker
+            log.warning("pruning old records failed", exc_info=True)
+            return None
+        if any(done.values()):
+            log.info("pruned old records: %s", done)
+        return done
 
     def _job_failed(self, job: dict, message: str, fix_status: str = "failed") -> None:
         if job["kind"] in ("fix_propose", "fix_push"):

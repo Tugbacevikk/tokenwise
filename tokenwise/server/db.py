@@ -665,6 +665,71 @@ def first_delivery(conn, delivery_id: str, event: str) -> bool:
     return row is not None
 
 
+# How long records that outlive their purpose are kept (docs/privacy.md lists them all).
+RETENTION_DAYS = {
+    "jobs": 30,  # finished or failed queue entries: for debugging recent problems
+    "orphan_users": 30,  # signed-in people with no organization left and no session
+    "removed_installations": 90,  # to ignore late events of an uninstalled app
+}
+
+
+def prune_old_records(conn) -> dict:
+    """Deletes what is past its keeping period. Run by the worker about once an hour."""
+    done = {}
+    done["sessions"] = conn.execute("DELETE FROM sessions WHERE expires_at < now()").rowcount
+    done["jobs"] = conn.execute(
+        "DELETE FROM jobs WHERE status IN ('done', 'failed')"
+        " AND COALESCE(finished_at, created_at) < now() - make_interval(days => %s)",
+        (RETENTION_DAYS["jobs"],),
+    ).rowcount
+    done["users"] = conn.execute(
+        "DELETE FROM users u WHERE u.created_at < now() - make_interval(days => %s)"
+        " AND NOT EXISTS (SELECT 1 FROM members m WHERE m.user_id = u.id)"
+        " AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.user_id = u.id)",
+        (RETENTION_DAYS["orphan_users"],),
+    ).rowcount
+    done["removed_installations"] = conn.execute(
+        "DELETE FROM removed_installations WHERE removed_at < now() - make_interval(days => %s)",
+        (RETENTION_DAYS["removed_installations"],),
+    ).rowcount
+    done["deliveries"] = prune_deliveries(conn)
+    return done
+
+
+def export_org(conn, org_id: int) -> dict:
+    """Everything stored for one organization, for its owner (the model key is left out)."""
+
+    def rows(sql: str) -> list[dict]:
+        return conn.execute(sql, (org_id,)).fetchall()
+
+    org = conn.execute(
+        "SELECT id, installation_id, account_login, account_id, account_type, model_provider,"
+        " model_base_url, models, model_key IS NOT NULL AS has_model_key, created_at"
+        " FROM organizations WHERE id = %s", (org_id,),
+    ).fetchone()  # fmt: skip
+    in_org = "repository_id IN (SELECT id FROM repositories WHERE org_id = %s)"
+    return {
+        "organization": org,
+        "members": rows(
+            "SELECT u.id, u.login, m.role FROM members m JOIN users u"
+            " ON u.id = m.user_id WHERE m.org_id = %s"
+        ),  # fmt: skip
+        "repositories": rows("SELECT * FROM repositories WHERE org_id = %s"),
+        "scans": rows(f"SELECT * FROM scans WHERE {in_org}"),
+        "snapshots": rows(f"SELECT * FROM snapshots WHERE {in_org}"),
+        "findings": rows(f"SELECT * FROM findings WHERE {in_org}"),
+        "pull_requests": rows(f"SELECT * FROM pull_requests WHERE {in_org}"),
+        "fixes": rows(f"SELECT * FROM fixes WHERE {in_org}"),
+        "model_usage": rows("SELECT * FROM model_usage WHERE org_id = %s"),
+    }
+
+
+def delete_user(conn, user_id: int) -> None:
+    """Forgets a person: their sessions and memberships go with them; fixes and model usage
+    they asked for stay with the organization, without their name."""
+    conn.execute("DELETE FROM users WHERE id = %s", (user_id,))
+
+
 def prune_deliveries(conn, days: int = 30) -> int:
     return conn.execute(
         "DELETE FROM webhook_deliveries WHERE received_at < now() - make_interval(days => %s)",

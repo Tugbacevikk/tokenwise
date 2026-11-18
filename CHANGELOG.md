@@ -7,6 +7,12 @@ a change that breaks existing use bumps major.
 
 First release.
 
+- Privacy: the worker deletes records past their keeping period about once an hour
+  (expired sessions, finished jobs and orphan users after 30 days, removed installations
+  after 90). Owners can download everything stored for their organization as JSON; anyone
+  can delete their own record ("Hesabımı sil"). `docs/privacy.md`: a draft of what is
+  stored, why and for how long, to be reviewed by a lawyer before publishing.
+
 - PR reports also mark findings the change made worse ("kötüleşti: karmaşıklık 24 → 31"):
   same finding, higher severity or a larger measure (complexity, lines, TODOs, fan-in).
 

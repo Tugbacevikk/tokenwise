@@ -1082,3 +1082,40 @@ def test_selftest_stops_at_a_dead_address(server):
 
     (only,) = run_selftest(server, Dead(), connect=lambda: None)
     assert not only.ok and "TOKENWISE_PUBLIC_URL" in only.detail
+
+
+def test_privacy_export_forget_and_retention(setup, conn):
+    """An owner can download everything stored for the organization (never the model key);
+    a person can delete their own record; old records are pruned on schedule."""
+    app, worker, model = setup
+    install(TestClient(app))
+    drain(worker)
+    alice = login(app, ALICE)
+    org_id = alice.get("/api/me").json()["orgs"][0]["id"]
+    alice.put(f"/api/orgs/{org_id}/model", json={"api_key": "sk-ant-secret-key", "models": ["m"]})
+    response = alice.get(f"/api/orgs/{org_id}/export")
+    assert response.status_code == 200 and "attachment" in response.headers["content-disposition"]
+    data = response.json()
+    assert data["organization"]["has_model_key"] is True and data["findings"]
+    assert {"repositories", "scans", "members", "fixes", "model_usage"} <= set(data)
+    assert "sk-ant-secret-key" not in response.text and '"model_key"' not in response.text
+
+    # old records go; recent ones and members stay
+    conn.execute("INSERT INTO users (id, login, created_at) VALUES (999, 'gone',"
+                 " now() - interval '40 days')")  # fmt: skip
+    conn.execute("INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ('x', 999,"
+                 " now() - interval '1 day')")  # fmt: skip
+    conn.execute("UPDATE jobs SET finished_at = now() - interval '40 days' WHERE status = 'done'")
+    recent = queue.enqueue(conn, "scan", {"x": 1})
+    done = worker.maybe_prune()
+    assert done["sessions"] == 1 and done["users"] == 1 and done["jobs"] >= 1
+    assert worker.maybe_prune() is None  # not again within the hour
+    assert conn.execute("SELECT 1 FROM jobs WHERE id = %s", (recent,)).fetchone()
+    assert conn.execute("SELECT 1 FROM users WHERE id = %s", (ALICE["id"],)).fetchone()
+
+    # forgetting a person ends their sessions; the organization's records stay
+    gone = alice.delete("/api/me")
+    assert gone.status_code == 200
+    assert conn.execute("SELECT 1 FROM users WHERE id = %s", (ALICE["id"],)).fetchone() is None
+    assert alice.get("/api/me").status_code == 401
+    assert conn.execute("SELECT COUNT(*) AS n FROM findings").fetchone()["n"] > 0
