@@ -339,38 +339,32 @@ class Worker:
                        base_sha=sha, changes=changes) is None:  # fmt: skip
             raise JobError("the fix changed while the proposal was being made")
 
+    def _fix_label(self, fix: dict, repo: dict) -> str:
+        """What the fix is about, for its commit and PR title."""
+        finding = fix["finding_id"] and db.finding(self.conn, repo["id"], fix["finding_id"])
+        if finding:
+            return finding["title"]
+        return (fix.get("task") or {}).get("title") or "fix"
+
     def fix_push(self, payload: dict) -> None:
         fix = db.fix(self.conn, payload["fix_id"])
         if fix is None or fix["status"] != "approved":
             raise JobError("fix is not approved")
         repo = self._repo(fix["repository_id"])
-        finding = fix["finding_id"] and db.finding(self.conn, repo["id"], fix["finding_id"])
         target = fix.get("target_ref") or repo["default_branch"]
         branch = f"tokenwise/fix-{fix['id']}"
         changes = [Change(c["path"], c["old"], c["new"]) for c in fix["changes"] or []]
         if not changes:
             raise JobError("the fix has no changes")
+        title = f"tokenwise: {self._fix_label(fix, repo)}"
         with self._workspace() as tmp:
             root = Path(tmp) / "repo"
             # the default branch as it is now, not as it was when the model saw it: if a file
             # changed since, the approved diff would no longer be what was reviewed
             head = self.github.clone(repo["installation_id"], repo["full_name"], target, root)
-            for change in changes:
-                path = (root / change.path).resolve()
-                if not path.is_relative_to(root.resolve()):
-                    raise JobError(f"path outside the repository: {change.path}")
-                current = path.read_text("utf-8") if path.exists() else None
-                expected = change.old
-                if (current.replace("\r\n", "\n") if current is not None else None) != expected:
-                    raise JobError(
-                        f"{change.path} öneri hazırlandıktan sonra {target} "
-                        f"dalında değişti ({(fix['base_sha'] or '')[:12]} → {head[:12]}). "
-                        "Yeni bir öneri isteyin.",
-                        fix_status="stale",
-                    )
+            _require_unchanged(root, changes, f"{target} dalında değişti "
+                               f"({(fix['base_sha'] or '')[:12]} → {head[:12]})")  # fmt: skip
             apply_changes(replace(repo_settings(root, self.server), root=root), changes)
-            label = finding["title"] if finding else (fix.get("task") or {}).get("title") or "fix"
-            title = f"tokenwise: {label}"
             message = (
                 f"{title}\n\n{(fix['summary'] or {}).get('request', '')}\n\n"
                 f"Approved in Tokenwise (fix #{fix['id']}).\n\n"
@@ -379,33 +373,45 @@ class Worker:
             _commit(root, [c.path for c in changes], message)
             self.fence()
             self.github.push_branch(repo["installation_id"], repo["full_name"], root, branch)
-        summary = fix["summary"] or {}
-        check = summary.get("check") or {}
-        state = {True: "geçti", False: "geçmedi"}.get(check.get("passed"), "çalıştırılmadı")
-        body = (
-            f"Bu taslak PR, Tokenwise'ta onaylanan bir düzeltmedir (fix #{fix['id']})"
-            + (
-                f"; #{fix['pr_number']} için risk raporundaki bir öneriden geldi"
-                if fix.get("pr_number")
-                else ""
-            )
-            + ".\n\n"
-            f"**İstek:** {summary.get('request', '')}\n\n"
-            f"**Model:** `{summary.get('model', '')}` · **Kontrol:** {state} · "
-            f"+{(summary.get('lines') or {}).get('added', 0)} "
-            f"−{(summary.get('lines') or {}).get('removed', 0)} satır\n\n"
-            "Merge kararı sizde: Tokenwise hedef dala hiçbir zaman kendisi yazmaz."
-        )
         self.fence()
         try:
             url = self.github.create_draft_pr(repo["installation_id"], repo["full_name"], branch,
-                                              target, title, body)  # fmt: skip
+                                              target, title, _fix_pr_body(fix))  # fmt: skip
         except RateLimited:
             raise
         except GitHubError as exc:
             raise JobError(str(exc)) from exc
         self.fence()
         db.update_fix(self.conn, fix["id"], status="pushed", branch=branch, pr_url=url, error=None)
+
+
+def _require_unchanged(root: Path, changes: list[Change], why: str) -> None:
+    """Each file must still be what the model saw: otherwise the approved diff is not what
+    the reviewer approved, and the fix becomes stale."""
+    for change in changes:
+        path = (root / change.path).resolve()
+        if not path.is_relative_to(root.resolve()):
+            raise JobError(f"path outside the repository: {change.path}")
+        current = path.read_text("utf-8").replace("\r\n", "\n") if path.exists() else None
+        if current != change.old:
+            raise JobError(f"{change.path} öneri hazırlandıktan sonra {why}. "
+                           "Yeni bir öneri isteyin.", fix_status="stale")  # fmt: skip
+
+
+def _fix_pr_body(fix: dict) -> str:
+    summary = fix["summary"] or {}
+    check = summary.get("check") or {}
+    state = {True: "geçti", False: "geçmedi"}.get(check.get("passed"), "çalıştırılmadı")
+    lines = summary.get("lines") or {}
+    origin = (f"; #{fix['pr_number']} için risk raporundaki bir öneriden geldi"
+              if fix.get("pr_number") else "")  # fmt: skip
+    return (
+        f"Bu taslak PR, Tokenwise'ta onaylanan bir düzeltmedir (fix #{fix['id']}){origin}.\n\n"
+        f"**İstek:** {summary.get('request', '')}\n\n"
+        f"**Model:** `{summary.get('model', '')}` · **Kontrol:** {state} · "
+        f"+{lines.get('added', 0)} −{lines.get('removed', 0)} satır\n\n"
+        "Merge kararı sizde: Tokenwise hedef dala hiçbir zaman kendisi yazmaz."
+    )
 
 
 def _commit(root: Path, paths: list[str], message: str) -> None:
