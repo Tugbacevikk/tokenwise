@@ -19,7 +19,7 @@ from psycopg.types.json import Jsonb
 from ..analyzers import Finding
 from ..health import scores_for, source_of
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -190,6 +190,21 @@ ALTER TABLE repositories ADD COLUMN IF NOT EXISTS last_event_at TEXT;
 ALTER TABLE pull_requests ADD COLUMN IF NOT EXISTS event_at TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS fixes_one_open ON fixes (finding_id)
     WHERE status IN ('queued', 'proposed', 'approved');
+
+-- version 3: fixes asked from a PR report's suggestions; merge and verification
+-- A suggestion fix has no finding: `task` holds its request and files, `target_ref` the PR
+-- branch it starts from and its draft PR goes into. Status after pushed: merged -> verified
+-- (a later scan of the default branch no longer finds the finding), or closed.
+ALTER TABLE fixes ALTER COLUMN finding_id DROP NOT NULL;
+ALTER TABLE fixes ADD COLUMN IF NOT EXISTS task JSONB;
+ALTER TABLE fixes ADD COLUMN IF NOT EXISTS pr_number INTEGER;
+ALTER TABLE fixes ADD COLUMN IF NOT EXISTS target_ref TEXT;
+ALTER TABLE fixes ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ;
+CREATE UNIQUE INDEX IF NOT EXISTS fixes_one_open_task ON fixes
+    (repository_id, pr_number, (task->>'request'))
+    WHERE finding_id IS NULL AND status IN ('queued', 'proposed', 'approved');
+ALTER TABLE pull_requests ADD COLUMN IF NOT EXISTS head_ref TEXT;
+ALTER TABLE pull_requests ADD COLUMN IF NOT EXISTS same_repo BOOLEAN NOT NULL DEFAULT false;
 """
 
 
@@ -455,19 +470,33 @@ def snapshots(conn, repo_id: int, limit: int = 30) -> list[dict]:
 
 
 def save_pr(conn, repo_id: int, number: int, head_sha: str, report: dict,
-            event_at: str | None = None) -> dict | None:  # fmt: skip
-    """Stores the report; returns the earlier row (with its comment id) if there was one."""
+            event_at: str | None = None, head_ref: str | None = None,
+            same_repo: bool = False) -> dict | None:  # fmt: skip
+    """Stores the report; returns the earlier row (with its comment id) if there was one.
+    `same_repo`: the PR's branch is in this repository (not a fork), so a fix can go into it."""
     old = conn.execute(
         "SELECT * FROM pull_requests WHERE repository_id = %s AND number = %s",
         (repo_id, number),
     ).fetchone()
     conn.execute(
         "INSERT INTO pull_requests (repository_id, number, head_sha, score, level, report,"
-        " event_at) VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (repository_id, number)"
+        " event_at, head_ref, same_repo) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+        " ON CONFLICT (repository_id, number)"
         " DO UPDATE SET head_sha = EXCLUDED.head_sha, score = EXCLUDED.score,"
         " level = EXCLUDED.level, report = EXCLUDED.report, updated_at = now(),"
-        " event_at = GREATEST(pull_requests.event_at, EXCLUDED.event_at)",
-        (repo_id, number, head_sha, report["score"], report["level"], Jsonb(report), event_at),
+        " event_at = GREATEST(pull_requests.event_at, EXCLUDED.event_at),"
+        " head_ref = EXCLUDED.head_ref, same_repo = EXCLUDED.same_repo",
+        (
+            repo_id,
+            number,
+            head_sha,
+            report["score"],
+            report["level"],
+            Jsonb(report),
+            event_at,
+            head_ref,
+            same_repo,
+        ),  # fmt: skip
     )
     return old
 
@@ -481,10 +510,62 @@ def set_pr_comment(conn, repo_id: int, number: int, comment_id: int) -> None:
 
 def pull_requests(conn, repo_id: int) -> list[dict]:
     return conn.execute(
-        "SELECT number, head_sha, score, level, updated_at FROM pull_requests"
-        " WHERE repository_id = %s ORDER BY updated_at DESC LIMIT 50",
+        "SELECT number, head_sha, score, level, updated_at, head_ref, same_repo,"
+        " jsonb_array_length(COALESCE(report->'suggestions', '[]')) AS suggestions,"
+        " (SELECT COUNT(*) FROM jsonb_array_elements(COALESCE(report->'findings', '[]')) e"
+        "  WHERE (e->>'new')::boolean) AS new_findings"
+        " FROM pull_requests WHERE repository_id = %s ORDER BY updated_at DESC LIMIT 50",
         (repo_id,),
     ).fetchall()
+
+
+def pull_request(conn, repo_id: int, number: int) -> dict | None:
+    return conn.execute(
+        "SELECT * FROM pull_requests WHERE repository_id = %s AND number = %s",
+        (repo_id, number),
+    ).fetchone()
+
+
+def create_task_fix(conn, repo_id: int, number: int, target_ref: str, task: dict,
+                    user_id: int) -> tuple[dict, bool]:  # fmt: skip
+    """A fix for one of a PR report's suggestions, made on the PR's branch. The same
+    suggestion asked twice while open gives the same fix. Returns (fix, created)."""
+    row = conn.execute(
+        "INSERT INTO fixes (repository_id, pr_number, target_ref, task, requested_by)"
+        " VALUES (%s, %s, %s, %s, %s)"
+        " ON CONFLICT (repository_id, pr_number, (task->>'request'))"
+        " WHERE finding_id IS NULL AND status IN ('queued', 'proposed', 'approved')"
+        " DO NOTHING RETURNING *",
+        (repo_id, number, target_ref, Jsonb(task), user_id),
+    ).fetchone()
+    if row is not None:
+        return row, True
+    return conn.execute(
+        "SELECT * FROM fixes WHERE repository_id = %s AND pr_number = %s"
+        " AND task->>'request' = %s AND finding_id IS NULL"
+        " AND status IN ('queued', 'proposed', 'approved')",
+        (repo_id, number, task["request"]),
+    ).fetchone(), False
+
+
+def fix_pr_closed(conn, repo_id: int, branch: str, merged: bool) -> dict | None:
+    """A draft PR Tokenwise opened was merged or closed."""
+    return conn.execute(
+        "UPDATE fixes SET status = %s, updated_at = now()"
+        " WHERE repository_id = %s AND branch = %s AND status = 'pushed' RETURNING *",
+        ("merged" if merged else "closed", repo_id, branch),
+    ).fetchone()
+
+
+def verify_fixes(conn, repo_id: int) -> list[int]:
+    """Merged fixes whose finding the latest default-branch scan no longer finds."""
+    rows = conn.execute(
+        "UPDATE fixes f SET status = 'verified', verified_at = now(), updated_at = now()"
+        " FROM findings x WHERE x.id = f.finding_id AND f.repository_id = %s"
+        " AND f.status = 'merged' AND x.status = 'resolved' RETURNING f.id",
+        (repo_id,),
+    ).fetchall()
+    return [r["id"] for r in rows]
 
 
 def create_fix(conn, repo_id: int, finding_id: int, user_id: int) -> tuple[dict, bool]:
@@ -533,8 +614,10 @@ def move_fix(conn, fix_id: int, frm: str, to: str, **values) -> dict | None:
 
 def fixes(conn, repo_id: int) -> list[dict]:
     return conn.execute(
-        "SELECT id, finding_id, status, branch, pr_url, error, summary, created_at"
-        " FROM fixes WHERE repository_id = %s ORDER BY id DESC LIMIT 50",
+        "SELECT f.id, f.finding_id, f.status, f.branch, f.pr_url, f.error, f.summary,"
+        " f.created_at, f.updated_at, f.pr_number, f.target_ref, f.task, f.verified_at,"
+        " x.status AS finding_status FROM fixes f LEFT JOIN findings x ON x.id = f.finding_id"
+        " WHERE f.repository_id = %s ORDER BY f.id DESC LIMIT 50",
         (repo_id,),
     ).fetchall()
 

@@ -831,3 +831,105 @@ def test_first_run_states_and_friendly_scan_errors(setup, conn, gh, monkeypatch)
                               "error": "Varsayılan dal bulunamadı: depoda en az bir commit olmalı."}  # fmt: skip
     assert friendly("something odd").startswith("Tarama tamamlanamadı")
     assert friendly(None) is None
+
+
+EVAL_REPLY = (
+    "app/api.py\n<<<<<<< SEARCH\n    return eval(x)\n=======\n    return int(x)\n>>>>>>> REPLACE\n"
+)
+
+
+def test_modules_feed_each_other(setup, gh, conn):
+    """A PR report lists the RepoDoctor findings it brings in; one of its suggestions goes to
+    the Agent, whose draft PR targets the PR's branch; a merged fix is verified by the scan."""
+    app, worker, model = setup
+    hooks = TestClient(app)
+    install(hooks)
+    drain(worker)
+    alice = login(app, ALICE)
+    org_id = alice.get("/api/me").json()["orgs"][0]["id"]
+    (repo,) = alice.get(f"/api/orgs/{org_id}/repos").json()
+    rid = repo["id"]
+    body = {"provider": "anthropic", "models": ["cheap-model"], "api_key": "sk-ant-org-key"}
+    assert alice.put(f"/api/orgs/{org_id}/model", json=body).status_code == 200
+
+    # a PR that brings in eval(): the report shows it as a new finding and offers a fix
+    work = gh.repos["acme/app"]["work"]
+    bare = gh.repos["acme/app"]["bare"]
+    git(work, "checkout", "-q", "-b", "feature")
+    (work / "app" / "api.py").write_text(
+        "from app.tasks import run\n\n\ndef handle(x):\n    return run(x)\n\n\n"
+        "def parse(x):\n    return eval(x)\n", "utf-8")  # fmt: skip
+    git(work, "commit", "-qam", "parse")
+    git(work, "push", "-q", str(bare), "feature")
+    repository = {"id": 555, "full_name": "acme/app", "default_branch": "main"}
+    inst = {"id": INSTALLATION}
+
+    def pr_event(number, action, head_ref, head_repo=555, merged=False):
+        return {"action": action, "installation": inst, "repository": repository,
+                "pull_request": {"number": number, "state": "closed" if action == "closed"
+                                 else "open", "merged": merged,
+                                 "head": {"sha": git(work, "rev-parse", "HEAD"), "ref": head_ref,
+                                          "repo": {"id": head_repo}},
+                                 "base": {"ref": "main"}}}  # fmt: skip
+
+    send(hooks, "pull_request", pr_event(8, "opened", "feature"))
+    assert [j["status"] for j in drain(worker)] == ["done"]
+    (comment,) = gh.comments.values()
+    assert "RepoDoctor" in comment["body"] and "**yeni**" in comment["body"]
+    assert "eval" in comment["body"] and "PR riskleri" in comment["body"]
+    (row,) = alice.get(f"/api/repos/{rid}/pulls").json()
+    assert row["new_findings"] >= 1 and row["suggestions"] >= 1 and row["same_repo"] is True
+    report = alice.get(f"/api/repos/{rid}/pulls/8").json()["report"]
+    new = [f for f in report["findings"] if f["new"]]
+    assert any(f["rule"] == "dynamic-code" and f["file"] == "app/api.py" for f in new)
+    index = next(i for i, s in enumerate(report["suggestions"]) if "eval" in s["request"])
+
+    # the suggestion goes to the Agent on the PR's branch; asking twice gives the same fix
+    model["llm"] = FakeLLM(EVAL_REPLY)
+    url = f"/api/repos/{rid}/pulls/8/suggestions/{index}/fix"
+    fix = alice.post(url).json()
+    assert alice.post(url).json()["id"] == fix["id"]
+    assert fix["target_ref"] == "feature" and fix["finding_id"] is None
+    assert alice.post(f"/api/repos/{rid}/pulls/8/suggestions/99/fix").status_code == 404
+    assert [j["status"] for j in drain(worker)] == ["done"]
+    proposed = alice.get(f"/api/fixes/{fix['id']}").json()
+    assert proposed["status"] == "proposed" and "int(x)" in proposed["changes"][0]["diff"]
+    assert alice.post(f"/api/fixes/{fix['id']}/approve").status_code == 200
+    assert [j["status"] for j in drain(worker)] == ["done"]
+    pushed = alice.get(f"/api/fixes/{fix['id']}").json()
+    assert pushed["status"] == "pushed"
+    assert gh.prs[-1]["base"] == "feature" and "#8" in gh.prs[-1]["body"]
+    assert "int(x)" in git(bare, "show", f"{pushed['branch']}:app/api.py")
+    listed = alice.get(f"/api/repos/{rid}/fixes").json()
+    assert listed[0]["pr_number"] == 8 and listed[0]["task"]["request"]
+
+    # a PR from a fork cannot receive a fix
+    send(hooks, "pull_request", pr_event(9, "opened", "feature", head_repo=777))
+    drain(worker)
+    fork = alice.post(f"/api/repos/{rid}/pulls/9/suggestions/0/fix")
+    assert fork.status_code == 400 and "fork" in fork.json()["detail"]
+
+    # a finding fix merged into main is verified by the next scan of main
+    shell = next(f for f in alice.get(f"/api/repos/{rid}/findings").json()
+                 if f["rule"] == "shell-command")  # fmt: skip
+    model["llm"] = FakeLLM(FIX_REPLY)
+    fix2 = alice.post(f"/api/repos/{rid}/findings/{shell['id']}/fix").json()
+    drain(worker)
+    alice.post(f"/api/fixes/{fix2['id']}/approve")
+    drain(worker)
+    branch = alice.get(f"/api/fixes/{fix2['id']}").json()["branch"]
+    git(bare, "update-ref", "refs/heads/main", f"refs/heads/{branch}")  # the merge on GitHub
+    merged = send(hooks, "pull_request", pr_event(102, "closed", branch, merged=True)).json()
+    assert merged == {"fix": fix2["id"], "status": "merged"}
+    send(hooks, "push", {"ref": "refs/heads/main", "after": git(bare, "rev-parse", "main"),
+                         "repository": repository, "installation": inst})  # fmt: skip
+    assert [j["kind"] for j in drain(worker)] == ["scan"]
+    done = alice.get(f"/api/fixes/{fix2['id']}").json()
+    assert done["status"] == "verified" and done["verified_at"]
+
+    # a fix PR closed without merging is closed, and a later close changes nothing
+    pr_fix = alice.get(f"/api/fixes/{fix['id']}").json()
+    closed = send(hooks, "pull_request", pr_event(101, "closed", pr_fix["branch"])).json()
+    assert closed == {"fix": fix["id"], "status": "closed"}
+    again = send(hooks, "pull_request", pr_event(101, "closed", pr_fix["branch"])).json()
+    assert again == {"ignored": "closed"}

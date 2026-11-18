@@ -199,6 +199,9 @@ class Worker:
             db.record_scan(self.conn, repo["id"], sha, found, len(graph.files),
                            round(time.monotonic() - started, 2), {"builtin", *tools.ran},
                            payload.get("scan_type", "push"))  # fmt: skip
+            verified = db.verify_fixes(self.conn, repo["id"])
+            if verified:
+                log.info("fixes %s verified by the scan of %s", verified, repo["full_name"])
         if payload.get("event_at"):
             self.conn.execute(
                 "UPDATE repositories SET last_event_at = GREATEST(COALESCE(last_event_at, ''), %s)"
@@ -230,9 +233,15 @@ class Worker:
                 raise JobError(str(exc)) from exc
         data = report.to_dict()
         data["markdown"] = to_markdown(report)
-        old = db.save_pr(self.conn, repo["id"], number, sha, data, payload.get("event_at"))
+        same_repo = bool(payload.get("same_repo"))
+        old = db.save_pr(self.conn, repo["id"], number, sha, data, payload.get("event_at"),
+                         payload.get("head_ref"), same_repo)  # fmt: skip
         link = f"{self.server.public_url}/#/repos/{repo['id']}"
-        body = data["markdown"] + f"\n[Tokenwise panelinde aç]({link}) · commit `{sha[:12]}`\n"
+        body = data["markdown"]
+        if data["suggestions"] and same_repo:
+            body += ("\nBu işleri Agent'a yaptırmak için panelde **PR riskleri** sekmesinden "
+                     "isteyin; sonuç onayınızla bu dala taslak PR olarak gelir.\n")  # fmt: skip
+        body += f"\n[Tokenwise panelinde aç]({link}) · commit `{sha[:12]}`\n"
         comment_id = self.github.upsert_comment(
             repo["installation_id"], repo["full_name"], number, body,
             old["comment_id"] if old else None,
@@ -241,23 +250,32 @@ class Worker:
 
     # ------------------------------------------------------------ Agent
 
+    def _task(self, fix: dict, repo: dict) -> dict:
+        """What the Agent is asked: a PR report's suggestion, or the finding's task."""
+        if fix["finding_id"] is None:
+            task = fix["task"] or {}
+            if not task.get("request"):
+                raise JobError("the fix has no task")
+            return task
+        finding = db.finding(self.conn, repo["id"], fix["finding_id"])
+        if finding is None:
+            raise JobError("finding is gone")
+        return task_for(finding)
+
     def fix_propose(self, payload: dict) -> None:
         fix = db.fix(self.conn, payload["fix_id"])
         if fix is None or fix["status"] != "queued":
             raise JobError("fix is not waiting for a proposal")
         repo = self._repo(fix["repository_id"])
         org = self._org(repo["org_id"])
-        finding = db.finding(self.conn, repo["id"], fix["finding_id"])
-        if finding is None:
-            raise JobError("finding is gone")
-        task = task_for(finding)
+        task = self._task(fix, repo)
+        ref = fix.get("target_ref") or repo["default_branch"]
         with self._workspace() as tmp:
             root = Path(tmp) / "repo"
-            sha = self.github.clone(repo["installation_id"], repo["full_name"],
-                                    repo["default_branch"], root)  # fmt: skip
+            sha = self.github.clone(repo["installation_id"], repo["full_name"], ref, root)
             settings = repo_settings(root, self.server, org)
             llm = self.model_factory(settings, self.server.decrypt(org["model_key"]))
-            result = run_agent(task["request"], settings, llm, files=task["files"])
+            result = run_agent(task["request"], settings, llm, files=task.get("files") or [])
         data = result.to_dict()
         db.log_usage(self.conn, org["id"], repo["id"], fix["requested_by"], "fix", data["calls"])
         summary = {
@@ -282,7 +300,8 @@ class Worker:
         if fix is None or fix["status"] != "approved":
             raise JobError("fix is not approved")
         repo = self._repo(fix["repository_id"])
-        finding = db.finding(self.conn, repo["id"], fix["finding_id"])
+        finding = fix["finding_id"] and db.finding(self.conn, repo["id"], fix["finding_id"])
+        target = fix.get("target_ref") or repo["default_branch"]
         branch = f"tokenwise/fix-{fix['id']}"
         changes = [Change(c["path"], c["old"], c["new"]) for c in fix["changes"] or []]
         if not changes:
@@ -291,8 +310,7 @@ class Worker:
             root = Path(tmp) / "repo"
             # the default branch as it is now, not as it was when the model saw it: if a file
             # changed since, the approved diff would no longer be what was reviewed
-            head = self.github.clone(repo["installation_id"], repo["full_name"],
-                                     repo["default_branch"], root)  # fmt: skip
+            head = self.github.clone(repo["installation_id"], repo["full_name"], target, root)
             for change in changes:
                 path = (root / change.path).resolve()
                 if not path.is_relative_to(root.resolve()):
@@ -301,13 +319,14 @@ class Worker:
                 expected = change.old
                 if (current.replace("\r\n", "\n") if current is not None else None) != expected:
                     raise JobError(
-                        f"{change.path} öneri hazırlandıktan sonra {repo['default_branch']} "
+                        f"{change.path} öneri hazırlandıktan sonra {target} "
                         f"dalında değişti ({(fix['base_sha'] or '')[:12]} → {head[:12]}). "
                         "Yeni bir öneri isteyin.",
                         fix_status="stale",
                     )
             apply_changes(replace(repo_settings(root, self.server), root=root), changes)
-            title = f"tokenwise: {finding['title'] if finding else 'fix'}"
+            label = finding["title"] if finding else (fix.get("task") or {}).get("title") or "fix"
+            title = f"tokenwise: {label}"
             message = (
                 f"{title}\n\n{(fix['summary'] or {}).get('request', '')}\n\n"
                 f"Approved in Tokenwise (fix #{fix['id']}).\n\n"
@@ -319,16 +338,22 @@ class Worker:
         check = summary.get("check") or {}
         state = {True: "geçti", False: "geçmedi"}.get(check.get("passed"), "çalıştırılmadı")
         body = (
-            f"Bu taslak PR, Tokenwise'ta onaylanan bir düzeltmedir (fix #{fix['id']}).\n\n"
+            f"Bu taslak PR, Tokenwise'ta onaylanan bir düzeltmedir (fix #{fix['id']})"
+            + (
+                f"; #{fix['pr_number']} için risk raporundaki bir öneriden geldi"
+                if fix.get("pr_number")
+                else ""
+            )
+            + ".\n\n"
             f"**İstek:** {summary.get('request', '')}\n\n"
             f"**Model:** `{summary.get('model', '')}` · **Kontrol:** {state} · "
             f"+{(summary.get('lines') or {}).get('added', 0)} "
             f"−{(summary.get('lines') or {}).get('removed', 0)} satır\n\n"
-            "Merge kararı sizde: Tokenwise ana dala hiçbir zaman yazmaz."
+            "Merge kararı sizde: Tokenwise hedef dala hiçbir zaman kendisi yazmaz."
         )
         try:
             url = self.github.create_draft_pr(repo["installation_id"], repo["full_name"], branch,
-                                              repo["default_branch"], title, body)  # fmt: skip
+                                              target, title, body)  # fmt: skip
         except RateLimited:
             raise
         except GitHubError as exc:

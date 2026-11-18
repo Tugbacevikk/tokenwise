@@ -703,12 +703,21 @@ def risk(
         for s in report.signals:
             table.add_row(LABELS[s.name], f"{s.points:g}", s.confidence, "\n".join(s.reasons))
         console.print(table)
+        _print_findings(report)
         for item in report.checklist:
             console.print(f"[ ] {item}")
         for s in report.suggestions:
             console.print(f'[dim]Agent:[/] tokenwise ask "{s["request"]}"')
     if fail_above and report.score > fail_above:
         raise typer.Exit(1)
+
+
+def _print_findings(report) -> None:
+    """RepoDoctor findings in the changed files: the new ones, else the ones already there."""
+    for f in (report.new_findings or report.findings)[:8]:
+        where = f"{f['file']}:{f['line']}" if f["line"] else f["file"]
+        new = "[bold]yeni[/] " if f["new"] else ""
+        console.print(f"RepoDoctor: {new}{f['severity']} {escape(f['title'])} ({where})")
 
 
 @app.command()
