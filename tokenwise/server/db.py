@@ -19,7 +19,7 @@ from psycopg.types.json import Jsonb
 from ..analyzers import Finding
 from ..health import scores_for, source_of
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -205,6 +205,18 @@ CREATE UNIQUE INDEX IF NOT EXISTS fixes_one_open_task ON fixes
     WHERE finding_id IS NULL AND status IN ('queued', 'proposed', 'approved');
 ALTER TABLE pull_requests ADD COLUMN IF NOT EXISTS head_ref TEXT;
 ALTER TABLE pull_requests ADD COLUMN IF NOT EXISTS same_repo BOOLEAN NOT NULL DEFAULT false;
+
+-- version 4: a lease number per claim, so a worker that lost its job cannot act on it
+CREATE SEQUENCE IF NOT EXISTS job_lease;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS lease BIGINT;
+
+-- version 4: request counts shared by every web process (rate limits)
+CREATE UNLOGGED TABLE IF NOT EXISTS rate_hits (
+    bucket TEXT NOT NULL,
+    window_start TIMESTAMPTZ NOT NULL,
+    hits INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (bucket, window_start)
+);
 """
 
 

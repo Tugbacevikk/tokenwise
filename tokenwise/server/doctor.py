@@ -100,6 +100,7 @@ def check_docker(server: ServerConfig) -> list[Check]:
         checks.append(Check("Sandbox runtime", found, server.sandbox_runtime + (
             "" if found else ": Docker'da kayıtlı değil (gVisor kurulumu: docs/hosting.md)"
         )))  # fmt: skip
+    checks.append(isolation_check(server, docker))
     image = subprocess.run([docker, "image", "inspect", server.sandbox_image],
                            capture_output=True, text=True, timeout=30)  # fmt: skip
     checks.append(Check("Sandbox imajı", image.returncode == 0, server.sandbox_image + (
@@ -130,6 +131,24 @@ def check_work_dir(server: ServerConfig, docker_ok: bool) -> Check:
                      "konteynerdeyse TOKENWISE_WORK_DIR host'ta da aynı yolda olmalı "
                      "(docs/hosting.md).")  # fmt: skip
     return Check("Çalışma klasörü", True, f"{base} konteynerden de görünüyor")
+
+
+def isolation_check(server: ServerConfig, docker: str) -> Check:
+    """Customer code runs in the checks: a container escape should not mean root on the host.
+    Not required (a first install works without it), but the beta should not go live without."""
+    security = subprocess.run([docker, "info", "--format", "{{json .SecurityOptions}}"],
+                              capture_output=True, text=True, timeout=30).stdout  # fmt: skip
+    rootless = "rootless" in security
+    layers = [name for name, on in (("gVisor", server.sandbox_runtime == "runsc"),
+                                    ("rootless Docker", rootless)) if on]  # fmt: skip
+    if layers:
+        return Check("Sandbox izolasyonu", True, " + ".join(layers), required=False)
+    advice = (
+        "kontroller root Docker ile host çekirdeğinde çalışıyor. Canlıya çıkmadan önce gVisor "
+        "(TOKENWISE_SANDBOX_RUNTIME=runsc) ya da rootless Docker kurun ve worker'ı web'den ayrı "
+        "bir makinede çalıştırın (docs/hosting.md)"
+    )
+    return Check("Sandbox izolasyonu", False, advice, required=False)
 
 
 def run_checks(server: ServerConfig, github_client=None) -> list[Check]:

@@ -7,6 +7,12 @@ a change that breaks existing use bumps major.
 
 First release.
 
+- Hosted worker: every claim of a job gets a lease number. A worker whose job was handed to
+  another stops at the heartbeat or at the check before each outside step (push, PR,
+  comment, records), and can no longer finish, fail or defer the job. Rate limits are
+  counted in PostgreSQL, shared by every web process (memory fallback). `server doctor`
+  warns when checks run without gVisor or rootless Docker. Schema version 4.
+
 - The three modules feed each other. A ReleaseGuard report (CLI, local page, PR comment)
   lists the RepoDoctor findings in the changed files and marks the ones the change brought
   in; serious new ones become Agent suggestions. On the hosted dashboard a PR's suggestions

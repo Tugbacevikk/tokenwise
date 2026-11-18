@@ -304,6 +304,8 @@ def test_queue_dedupe_retry_and_stale_jobs(conn):
     row = conn.execute("SELECT * FROM jobs WHERE id = %s", (newer,)).fetchone()
     assert row["run_after"] > db.now() and row["error"] == "boom"
     assert queue.claim(conn, "w") is None  # not before its delay
+    assert queue.fail(conn, job, "again") == "lost"  # queued again: this claim is over
+    conn.execute("UPDATE jobs SET status = 'running' WHERE id = %s", (newer,))
     assert queue.fail(conn, {**job, "attempts": queue.MAX_ATTEMPTS}, "boom") == "failed"
 
     stuck = queue.enqueue(conn, "x", {})
@@ -518,6 +520,21 @@ class FakeApp:
         return self.info
 
 
+def test_isolation_check_names_the_layers(server, monkeypatch):
+    from tokenwise.server import doctor
+
+    def info(output):
+        return lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout=output, stderr="")
+
+    monkeypatch.setattr(doctor.subprocess, "run", info('["name=seccomp"]'))
+    bare = doctor.isolation_check(server, "docker")
+    assert not bare.ok and not bare.required and "gVisor" in bare.detail
+    monkeypatch.setattr(doctor.subprocess, "run", info('["name=seccomp","name=rootless"]'))
+    server.sandbox_runtime = "runsc"
+    good = doctor.isolation_check(server, "docker")
+    assert good.ok and good.detail == "gVisor + rootless Docker"
+
+
 def test_doctor_reports_each_part(conn, server):
     from tokenwise.server.doctor import check_github_app, ready, run_checks
 
@@ -533,6 +550,8 @@ def test_doctor_reports_each_part(conn, server):
         assert checks["Docker"].ok and checks["Sandbox imajı"].ok
         assert checks["Çalışma klasörü"].ok, checks["Çalışma klasörü"].detail
         assert ready(list(checks.values()))
+    if "Sandbox izolasyonu" in checks:  # advice, never blocks the setup
+        assert not checks["Sandbox izolasyonu"].required
     weak = {**good, "events": ["push"], "permissions": {"contents": "read"}}
     bad = check_github_app(server, FakeApp(weak))
     assert not bad.ok and "pull_request" in bad.detail and "contents" in bad.detail
@@ -933,3 +952,78 @@ def test_modules_feed_each_other(setup, gh, conn):
     assert closed == {"fix": fix["id"], "status": "closed"}
     again = send(hooks, "pull_request", pr_event(101, "closed", pr_fix["branch"])).json()
     assert again == {"ignored": "closed"}
+
+
+def test_a_worker_that_lost_its_job_stops_before_pushing(setup, conn, gh, monkeypatch):
+    """The job was handed to another worker while this one was busy: it must not push, open a
+    PR or record anything; the job stays with its new holder."""
+    from tokenwise.server import worker as worker_module
+
+    app, worker, model = setup
+    install(TestClient(app))
+    drain(worker)
+    alice = login(app, ALICE)
+    org_id = alice.get("/api/me").json()["orgs"][0]["id"]
+    alice.put(f"/api/orgs/{org_id}/model", json={"api_key": "k", "models": ["m"]})
+    repo = conn.execute("SELECT id FROM repositories").fetchone()["id"]
+    shell = next(f for f in alice.get(f"/api/repos/{repo}/findings").json()
+                 if f["rule"] == "shell-command")  # fmt: skip
+    fix = alice.post(f"/api/repos/{repo}/findings/{shell['id']}/fix").json()
+    drain(worker)
+    alice.post(f"/api/fixes/{fix['id']}/approve")
+
+    real_commit = worker_module._commit
+
+    def commit_then_lose_the_job(root, paths, message):
+        real_commit(root, paths, message)  # meanwhile the job was given to "w2"
+        conn.execute("UPDATE jobs SET locked_by = 'w2', lease = nextval('job_lease')"
+                     " WHERE status = 'running'")  # fmt: skip
+
+    monkeypatch.setattr(worker_module, "_commit", commit_then_lose_the_job)
+    (job,) = drain(worker)
+    assert job["status"] == "lost"
+    assert gh.prs == [] and "tokenwise/fix" not in git(gh.repos["acme/app"]["bare"], "branch")
+    row = conn.execute("SELECT status, locked_by FROM jobs WHERE id = %s", (job["id"],)).fetchone()
+    assert row == {"status": "running", "locked_by": "w2"}  # untouched: w2 will finish it
+    assert alice.get(f"/api/fixes/{fix['id']}").json()["status"] == "approved"
+
+
+def test_heartbeat_notices_a_lost_lease_and_old_claims_cannot_finish(conn):
+    import time
+
+    from tokenwise.server.worker import Heartbeat
+
+    job_id = queue.enqueue(conn, "scan", {})
+    job = queue.claim(conn, "w1")
+    beat = Heartbeat(lambda: db.connect(DATABASE_URL), job_id, "w1", every=0.05,
+                     lease=job["lease"])  # fmt: skip
+    with beat:
+        time.sleep(0.15)
+        assert not beat.lost.is_set()
+        conn.execute("UPDATE jobs SET lease = nextval('job_lease') WHERE id = %s", (job_id,))
+        time.sleep(0.3)
+    assert beat.lost.is_set()
+    assert queue.holds(conn, job) is False
+    assert queue.finish(conn, job_id, "w1", job["lease"]) is False
+    assert queue.defer(conn, job, 10, "wait") is False
+    assert (
+        conn.execute("SELECT status FROM jobs WHERE id = %s", (job_id,)).fetchone()["status"]
+        == "running"
+    )
+
+
+def test_rate_limit_is_shared_between_web_processes(conn):
+    from tokenwise.server.app import SharedRateLimiter
+
+    connect = lambda: db.connect(DATABASE_URL)  # noqa: E731
+    one = SharedRateLimiter(connect, (("/api/", 3),))
+    two = SharedRateLimiter(connect, (("/api/", 3),))  # another process, same database
+    assert [one.check("a", "/api/x"), two.check("a", "/api/x"), one.check("a", "/api/x")] == [0] * 3
+    assert two.check("a", "/api/x") > 0
+    assert one.check("b", "/api/x") == 0 and one.check("a", "/webhooks/github") == 0
+
+    def broken():
+        raise OSError("database down")
+
+    alone = SharedRateLimiter(broken, (("/api/", 1),))  # falls back to counting in memory
+    assert alone.check("a", "/api/x") == 0 and alone.check("a", "/api/x") > 0

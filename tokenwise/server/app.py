@@ -25,6 +25,7 @@ that change something must carry the `X-Tokenwise: 1` header, which a cross-site
 from __future__ import annotations
 
 import json
+import logging
 import secrets
 import threading
 import time
@@ -34,6 +35,7 @@ from datetime import timedelta
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from pydantic import BaseModel
 
@@ -41,6 +43,8 @@ from ..health import SEVERITY_WEIGHT
 from . import db, queue
 from .config import ServerConfig
 from .github import AppConfig, GitHub, GitHubApp, GitHubError, verify_signature
+
+log = logging.getLogger("tokenwise.server")
 
 PAGE = Path(__file__).parent / "static" / "dashboard.html"
 SESSION_COOKIE = "tw_session"
@@ -56,8 +60,7 @@ RATE_LIMITS = (("/auth/", 20), ("/api/", 240))
 
 class RateLimiter:
     """A sliding one-minute window per (client, path group), kept in this process's memory.
-    With several web processes each one counts its own share, which is enough to stop one
-    client from flooding the API or the sign-in."""
+    The app uses SharedRateLimiter; this one is its fallback when the database is down."""
 
     def __init__(self, limits=RATE_LIMITS, clock=time.monotonic) -> None:
         self.limits, self.clock = limits, clock
@@ -82,6 +85,49 @@ class RateLimiter:
                 for key in [k for k, w in self.hits.items() if not w or w[-1] <= now - 60]:
                     del self.hits[key]
             return 0
+
+
+class SharedRateLimiter:
+    """The same limits counted in PostgreSQL, so every web process sees the same numbers.
+    A sliding-window estimate: this minute's count plus the share of last minute's that is
+    still inside the last 60 seconds. If the database cannot be reached, the in-memory limiter
+    of this process decides, so a database hiccup does not take the sign-in down with it."""
+
+    def __init__(self, connect: Callable, limits=RATE_LIMITS) -> None:
+        self.connect, self.limits = connect, limits
+        self.fallback = RateLimiter(limits)
+
+    def check(self, client: str, path: str) -> int:
+        group = next(((prefix, n) for prefix, n in self.limits if path.startswith(prefix)), None)
+        if group is None:
+            return 0
+        prefix, limit = group
+        bucket = f"{prefix}|{client}"
+        try:
+            conn = self.connect()
+            try:
+                row = conn.execute(
+                    "INSERT INTO rate_hits (bucket, window_start, hits)"
+                    " VALUES (%s, date_trunc('minute', now()), 1)"
+                    " ON CONFLICT (bucket, window_start) DO UPDATE SET hits = rate_hits.hits + 1"
+                    " RETURNING hits, EXTRACT(EPOCH FROM now() - window_start)::float AS elapsed,"
+                    " (SELECT p.hits FROM rate_hits p WHERE p.bucket = %s"
+                    "  AND p.window_start = date_trunc('minute', now()) - interval '1 minute')"
+                    " AS previous",
+                    (bucket, bucket),
+                ).fetchone()
+                if secrets.randbelow(500) == 0:
+                    conn.execute("DELETE FROM rate_hits WHERE window_start < now() - interval "
+                                 "'5 minutes'")  # fmt: skip
+            finally:
+                conn.close()
+        except Exception:  # noqa: BLE001 - the database is down: count in this process
+            log.warning("shared rate limit unavailable; using this process's", exc_info=True)
+            return self.fallback.check(client, path)
+        used = row["hits"] + (row["previous"] or 0) * max(0.0, 1 - row["elapsed"] / 60)
+        if used > limit:
+            return max(1, int(60 - row["elapsed"]) + 1)
+        return 0
 
 
 class ModelBody(BaseModel):
@@ -127,18 +173,18 @@ def create_app(
     connect: Callable | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Tokenwise", docs_url=None, redoc_url=None)
-    limiter = RateLimiter()
+    connect = connect or (lambda: db.connect(server.database_url))
+    limiter = SharedRateLimiter(connect)
 
     @app.middleware("http")
     async def rate_limit(request: Request, call_next):
         client = request.client.host if request.client else "?"
-        wait = limiter.check(client, request.url.path)
+        wait = await run_in_threadpool(limiter.check, client, request.url.path)
         if wait:
             return JSONResponse({"detail": "Çok fazla istek; biraz sonra tekrar deneyin."},
                                 status_code=429, headers={"Retry-After": str(wait)})  # fmt: skip
         return await call_next(request)
 
-    connect = connect or (lambda: db.connect(server.database_url))
     secure = server.public_url.startswith("https://")
     # over https the cookie gets the __Host- prefix: browsers then refuse it unless it is
     # Secure, for this host only and for the whole site, so a subdomain cannot plant one
