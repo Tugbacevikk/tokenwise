@@ -8,7 +8,7 @@ Modele bütün projeyi göndermek ve bütün dosyayı yeniden yazdırmak yerine 
 1. Projenin **haritasını** çıkarır: dosya yolları ve fonksiyon/sınıf imzaları, gövdeler olmadan.
 2. **En ucuz model** haritaya bakıp işin hangi dosyalara ihtiyaç duyduğunu seçer. İstekte adı geçen fonksiyon ve sınıfların dosyaları da modele sorulmadan, metin aramasıyla eklenir.
 3. **Sadece o dosyalar** düzenleyici modele gönderilir; büyük dosyalardan da sadece ilgili fonksiyonlar.
-4. **Yönlendirici** isteğin zorluğunu kurallarla tahmin eder (model çağrısı yok) ve model merdiveninin uygun basamağından başlar; model beceremezse bir üst modele geçer.
+4. **Yönlendirici** işin zorluğunu, değişecek koda bakarak tahmin eder (model çağrısı yok) ve model merdiveninin uygun basamağından başlar; model beceremezse bir üst modele geçer. Ayrıntılar "Model seçimi" bölümünde.
 5. Model dosyayı baştan yazmaz, sadece **değişen satırları** döndürür.
 6. Değişiklik renkli fark (diff) olarak gösterilir, onay verirsen uygulanır, istersen geri alınır.
 7. Birebir aynı istek tekrar gelirse cevap **önbellekten** döner, model çağrılmaz.
@@ -170,6 +170,29 @@ Haftalık bütçe yeni istekleri durdurur, ama tek bir isteğin daha güçlü mo
 - Fiyatı bilinmeyen modeller (yerel modeller) bu sınıra girmez.
 
 Barındırılan sürümde her AI düzeltmesinin varsayılan sınırı $0,50'dir (`TOKENWISE_MAX_USD_PER_FIX`). Depodaki `tokenwise.toml` bu sınırı yükseltemez.
+
+### Model seçimi (yönlendirici)
+
+İstek hangi modelden başlayacak? Yönlendirici bunu hiç model çağırmadan, şu sinyallerden çıkarır:
+
+| Sinyal | Etkisi |
+| --- | --- |
+| İsteğin ifadesi | "yazım hatası", "yeniden adlandır" bir basamak aşağı; "refactor", "performans", "eşzamanlılık" bir basamak yukarı |
+| Değişecek kodun boyutu | Modelin göreceği kod 600 satırı ya da 4 dosyayı aşarsa yukarı |
+| Hedef kodun karmaşıklığı | Değişecek fonksiyonun karmaşıklığı 15 ve üstündeyse yukarı (Python, JS/TS) |
+| Koda bağlı dosyalar | Değişecek dosyayı 5 ya da daha fazla dosya içe aktarıyorsa yukarı: hata yayılır |
+| Bu projenin geçmişi | Son 30 günde aynı basamaktan başlayan isteklerin en az yarısı daha güçlü modele geçmek zorunda kaldıysa (en az 5 istek), baştan bir basamak yukarıdan başlar ve boşa giden denemeler atlanır |
+
+Hiçbir sinyal yoksa orta basamaktan başlanır. Komut satırı da web sayfası da kararın nedenini yazar, örneğin "Why: complexity 17 (+1)" ya da "Neden bu model: hedef kodun karmaşıklığı 17 (+1)".
+
+`router = "simple"` yalnızca isteğin ifadesine ve kodun boyutuna bakar; eski davranış budur. İkisini kendi görevlerinde karşılaştırmak için:
+
+```powershell
+# benchmark/tokenwise.toml içinde router = "simple"
+tokenwise benchmark --methods tokenwise --repeat 3 --json-out simple.json
+# router = "smart" yap
+tokenwise benchmark --methods tokenwise --repeat 3 --compare simple.json
+```
 
 ### Önbellek
 

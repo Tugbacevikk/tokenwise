@@ -13,7 +13,7 @@ from .llm import LLM, Reply, Usage
 from .lookup import mentioned_targets, merge_selection
 from .pricing import reply_cost
 from .repo_map import build_map, list_source_files
-from .router import NAMES, difficulty, ladder
+from .router import NAMES, ladder, route
 from .selector import select_files
 
 
@@ -22,6 +22,7 @@ class Result:
     request: str
     files: list[str] = field(default_factory=list)
     level: str = ""
+    route: list[dict] = field(default_factory=list)  # why the router started at `level`
     models: list[str] = field(default_factory=list)
     replies: list[Reply] = field(default_factory=list)
     changes: list[Change] = field(default_factory=list)
@@ -64,6 +65,7 @@ class Result:
             "error": self.error,
             "files": self.files,
             "difficulty": self.level,
+            "route": self.route,
             "models": self.models,
             "model": self.model,
             "changes": [
@@ -122,6 +124,21 @@ def run(
         return result
 
 
+GRAPH_FILE_LIMIT = 2000  # larger projects skip the import graph (it takes a few seconds)
+
+
+def _graph(settings: Settings, files: list[str]):
+    """The import graph for the router's reach signal; None when too big or unreadable."""
+    if len(files) > GRAPH_FILE_LIMIT:
+        return None
+    from .graph import build_graph
+
+    try:
+        return build_graph(settings, files)
+    except (OSError, ValueError):
+        return None
+
+
 def _run(request: str, settings: Settings, llm: LLM, model: str, files: list[str] | None) -> Result:
     result = Result(request=request, prices=settings.prices, check=settings.check)
     all_files = list_source_files(settings)
@@ -142,8 +159,10 @@ def _run(request: str, settings: Settings, llm: LLM, model: str, files: list[str
     if model:
         result.level, result.models = "forced", [model]
     else:
-        level = difficulty(request, settings.root, chosen, focus)
-        result.level, result.models = NAMES[level], ladder(settings.models, level)
+        graph = _graph(settings, all_files) if settings.router == "smart" else None
+        decision = route(request, settings, chosen, focus, graph=graph)
+        result.level, result.models = NAMES[decision.level], ladder(settings.models, decision.level)
+        result.route = decision.to_dict()
 
     verify = make_verifier(settings, settings.check) if settings.check else None
     proposal = propose(request, chosen, settings, llm, all_files, result.models, verify, focus)

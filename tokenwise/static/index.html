@@ -308,15 +308,35 @@ function rerenderDiffs() {
   }
 }
 
+const LEVELS = { easy: "kolay", medium: "orta", hard: "zor", forced: "seçilen model" };
+const SIGNALS = {
+  words: "isteğin ifadesi", size: "modelin göreceği satır", files: "değişecek dosya",
+  complexity: "hedef kodun karmaşıklığı", reach: "bu koda bağlı dosya",
+  history: "bu projede bu seviyede daha güçlü modele geçilen istek",
+};
+
+function routeText(route) {
+  return (route || []).filter((s) => s.points)
+    .map((s) => {
+      const value = s.signal === "words" ? { hard: "büyük iş", easy: "küçük iş" }[s.value] || s.value : s.value;
+      return `${SIGNALS[s.signal] || s.signal} ${value} (${s.points > 0 ? "+" : ""}${s.points})`;
+    })
+    .join("; ");
+}
+
 // Shows a proposal. Returns { decided }: a promise that resolves to "applied", "skipped" or "failed".
 function resultView(res) {
   const box = addAssistant();
   let settle;
   const decided = new Promise((resolve) => (settle = resolve));
   const tokens = res.usage.input + res.usage.output;
-  box.appendChild(el("div", "muted",
-    `${res.difficulty || "-"} · ${res.model || "-"} · ${res.files.length} dosya · ` +
-    `${tokens.toLocaleString("tr-TR")} token · $${res.cost_usd.toFixed(4)}`));
+  const meta = el("div", "muted",
+    `${LEVELS[res.difficulty] || res.difficulty || "-"} · ${res.model || "-"} · ${res.files.length} dosya · ` +
+    `${tokens.toLocaleString("tr-TR")} token · $${res.cost_usd.toFixed(4)}`);
+  const why = routeText(res.route);
+  if (why) meta.title = "Neden bu model: " + why;
+  box.appendChild(meta);
+  if (why) box.appendChild(el("div", "muted", "Neden bu model: " + why));
   if (res.error) box.appendChild(el("div", "err", res.error));
   if (res.check && res.check.command) {
     const state = res.check.passed ? ["ok", "Kontrol geçti"] :
