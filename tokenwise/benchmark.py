@@ -298,6 +298,7 @@ def to_json(outcomes: list[Outcome]) -> dict:
                 "model": o.result.model,
                 "models": o.result.models,
                 "level": o.result.level,
+                "route": o.result.route,
                 "escalated": o.escalated,
                 "calls": o.calls,
                 "cost": round(o.result.cost, 6),

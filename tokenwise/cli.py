@@ -266,6 +266,10 @@ def _show_result(result: Result) -> None:
         console.print(f"Files: [cyan]{', '.join(result.files)}[/]")
     if result.models:
         console.print(f"Difficulty: [cyan]{result.level}[/] → {' → '.join(result.models)}")
+        why = [f"{s['signal']} {s['value']} ({s['points']:+d})" for s in result.route
+               if s["points"]]  # fmt: skip
+        if why:
+            console.print(f"[dim]Why: {'; '.join(why)}[/]")
     for change in result.changes:
         console.print(Syntax(change.diff, "diff", theme="ansi_dark", background_color="default"))
 

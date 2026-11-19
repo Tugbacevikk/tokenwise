@@ -63,6 +63,10 @@ map_max_tokens = {map_max_tokens}
 budget_usd_week = 0
 # Most one request may cost (USD), escalation to stronger models included. 0 = no limit.
 max_usd_per_request = 0
+# How the starting model is chosen. "smart": the request's wording, the size and complexity of
+# the code it touches, how many files import that code, and how often this project's recent
+# requests had to climb to a stronger model. "simple": wording and size only.
+router = "smart"
 # Ollama only: the largest context window tokenwise may ask for. Bigger needs more GPU memory.
 max_context = 32768
 # Command that must pass before a change is offered, run in a throwaway copy of the project.
@@ -113,6 +117,7 @@ class Settings:
     max_files: int = 8
     focus_lines: int = 300
     budget_usd_week: float = 0.0
+    router: str = "smart"  # "smart": code + project history; "simple": wording and size only
     max_usd_per_request: float = 0.0  # one request's ceiling, escalation included (budget.py)
     max_context: int = 32768
     map_max_tokens: int = 16000
@@ -156,6 +161,8 @@ def load_settings(root: Path | str = ".") -> Settings:
     settings.base_url = os.getenv("TOKENWISE_BASE_URL", settings.base_url)
     if models := os.getenv("TOKENWISE_MODELS"):
         settings.models = tuple(m.strip() for m in models.split(",") if m.strip())
+    if settings.router not in ("smart", "simple"):
+        raise ValueError('tokenwise: `router` must be "smart" or "simple"')
     if settings.sandbox not in ("local", "docker"):
         raise ValueError('tokenwise: `sandbox` must be "local" or "docker"')
     if not settings.models:

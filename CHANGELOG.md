@@ -7,6 +7,12 @@ a change that breaks existing use bumps major.
 
 First release.
 
+- Smart router (`router = "smart"`, default): the starting model now also depends on the
+  complexity of the target functions (Python, JS/TS), how many files import the target,
+  and this project's last 30 days: when most requests starting at a level had to climb
+  anyway, it starts one rung higher. Every decision says why (CLI "Why:", web "Neden bu
+  model"). `router = "simple"` keeps the old wording-and-size rules, for A/B benchmarks.
+
 - OpenRouter provider (`tokenwise init --openrouter`, `provider = "openrouter"`): one key
   for DeepSeek, Qwen, Mistral, Llama, Claude and more. Prices come from OpenRouter's model
   list (cached a day) so costs, the weekly budget and `max_usd_per_request` work for every
