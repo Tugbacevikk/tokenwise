@@ -407,6 +407,21 @@ def report(
         console.print(f"Wrote {csv_path}")
 
 
+def _print_outcome(label: str, task, outcome) -> None:
+    skipped = f" [yellow]check skipped: {outcome.check_output}[/]" if task.check else ""
+    mark = {None: skipped, True: " [green]check passed[/]", False: " [red]check failed[/]"}
+    status = "ok" if outcome.result.ok else f"[red]{outcome.result.error}[/]"
+    broke = " [red]suite broke (regression)[/]" if outcome.regression else ""
+    console.print(
+        f"{label}: {status} · {format_usd(outcome.result.cost)}{mark[outcome.passed]}{broke}"
+    )
+    if outcome.passed is False and outcome.result.ok:
+        for change in outcome.result.changes:
+            console.print(change.diff, markup=False, highlight=False)
+        tail = "\n".join(outcome.check_output.splitlines()[-15:])
+        console.print(f"[dim]{tail}[/]" if tail else "[dim](check printed nothing)[/]")
+
+
 @app.command()
 def benchmark(
     tasks_file: Path = typer.Argument(
@@ -423,9 +438,28 @@ def benchmark(
     ),
     model: str = typer.Option("", "--model", "-m", help="Force one model for both methods."),
     only: str = typer.Option("", "--only", help="Run only tasks whose name contains this."),
+    repeat: int = typer.Option(
+        1, "--repeat", min=1, help="Run each task this many times, to see the run-to-run spread."
+    ),
+    json_out: Path | None = typer.Option(
+        None, "--json-out", help="Also save every run and the totals as JSON (for --compare)."
+    ),
+    compare_with: Path | None = typer.Option(
+        None, "--compare", help="A JSON from an earlier --json-out: show what moved since."
+    ),
 ) -> None:
     """Run every task twice, the usual way and the tokenwise way, and compare cost and results."""
-    from .benchmark import METHODS, Outcome, load_tasks, markdown, run_task, totals
+    from .benchmark import (
+        METHODS,
+        Outcome,
+        compare,
+        load_json,
+        load_tasks,
+        markdown,
+        run_task,
+        to_json,
+        totals,
+    )
 
     chosen = [m.strip() for m in methods.split(",") if m.strip()]
     if not chosen or any(m not in METHODS for m in chosen):
@@ -447,34 +481,32 @@ def benchmark(
     checks_dir = (tasks_file.parent / "checks").resolve()
 
     outcomes = []
-    for task in tasks:
-        for method in chosen:
-            with console.status(f"{task.name} · {method}..."):
-                try:
-                    outcome = run_task(task, method, settings, llm, checks_dir, model)
-                except ContextTooLongError as exc:  # this task is too big; the others may fit
-                    failed = Result(request=task.request, error=f"context too long: {exc}")
-                    outcome = Outcome(task, method, failed, False if task.check else None, 0.0)
-                except LLMError as exc:  # server down, unknown model: every task would fail
-                    _fail(f"{task.name} · {method}: {exc}")
-            ledger.record(outcome.result, method=method)
-            skipped = f" [yellow]check skipped: {outcome.check_output}[/]" if task.check else ""
-            mark = {None: skipped, True: " [green]check passed[/]", False: " [red]check failed[/]"}
-            status = "ok" if outcome.result.ok else f"[red]{outcome.result.error}[/]"
-            console.print(
-                f"{task.name} · {method}: {status} · {format_usd(outcome.result.cost)}"
-                f"{mark[outcome.passed]}"
-            )
-            if outcome.passed is False and outcome.result.ok:
-                for change in outcome.result.changes:
-                    console.print(change.diff, markup=False, highlight=False)
-                tail = "\n".join(outcome.check_output.splitlines()[-15:])
-                console.print(f"[dim]{tail}[/]" if tail else "[dim](check printed nothing)[/]")
-            outcomes.append(outcome)
+    runs = [(n, task, method) for n in range(1, repeat + 1) for task in tasks for method in chosen]
+    for number, task, method in runs:
+        label = f"{task.name} · {method}" + (f" · run {number}" if repeat > 1 else "")
+        with console.status(f"{label}..."):
+            try:
+                outcome = run_task(task, method, settings, llm, checks_dir, model, number)
+            except ContextTooLongError as exc:  # this task is too big; the others may fit
+                failed = Result(request=task.request, error=f"context too long: {exc}")
+                outcome = Outcome(task, method, failed, False if task.check else None, 0.0,
+                                  run=number)  # fmt: skip
+            except LLMError as exc:  # server down, unknown model: every task would fail
+                _fail(f"{task.name} · {method}: {exc}")
+        ledger.record(outcome.result, method=method)
+        _print_outcome(label, task, outcome)
+        outcomes.append(outcome)
 
     report_md = markdown(outcomes)
+    data = to_json(outcomes)
+    if compare_with is not None:
+        report_md += "\n## Compared with " + compare_with.name + "\n\n" + compare(
+            load_json(compare_with), data)  # fmt: skip
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(report_md, "utf-8")
+    if json_out is not None:
+        json_out.parent.mkdir(parents=True, exist_ok=True)
+        json_out.write_text(json.dumps(data, ensure_ascii=False, indent=1), "utf-8")
     console.print()
     table = Table(title="Benchmark", show_edge=False)
     table.add_column("")
@@ -486,6 +518,8 @@ def benchmark(
     table.add_row("output tokens", *(f"{s['output']:,}" for s in stats))
     table.add_row("lines changed", *(f"{s['lines']:,}" for s in stats))
     table.add_row("checks passed", *(f"{s['passed']}/{s['checked']}" for s in stats))
+    table.add_row("regressions", *(f"{s['regressions']}/{s['suite_runs']}" for s in stats))
+    table.add_row("median time (s)", *(f"{s['median_seconds']:.1f}" for s in stats))
     console.print(table)
     console.print(f"Wrote {out}")
 

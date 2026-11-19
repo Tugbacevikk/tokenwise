@@ -215,7 +215,22 @@ tokenwise benchmark                          # benchmark/tasks.toml → benchmar
 tokenwise benchmark --only discount          # tek görev
 tokenwise benchmark --methods tokenwise      # sadece bir yöntem
 tokenwise benchmark -m qwen2.5-coder:7b      # iki yöntem için de aynı model
+tokenwise benchmark --repeat 3               # her görevi 3 kez: sonuçların ne kadar oynadığını gör
+tokenwise benchmark --json-out once.json     # bütün sonuçları sakla
+tokenwise benchmark --compare once.json      # bir değişiklikten sonra: ne iyileşti, ne kötüleşti
 ```
+
+Her çalıştırma şunları ölçer:
+
+| Ölçüm | Anlamı |
+| --- | --- |
+| Çözülen | Görevin `check` komutu geçti mi? Kaç görev çözüldü (%) |
+| Regresyon | `suite` (projenin kendi testleri) değişiklikten önce geçiyordu, sonra kırıldı mı? Görev çözülmüş görünse bile başka bir şey bozulmuş olabilir. |
+| Maliyet | Toplam ve **çözülen görev başına** maliyet ($) |
+| Süre | Görev başına ortanca süre (sn) |
+| Model çağrısı, yükseltme | Kaç çağrı yapıldı; yönlendirici daha güçlü bir modele geçmek zorunda kaldı mı (`↑`) |
+
+Modeller her seferinde aynı cevabı vermez. Bu yüzden `--repeat` ile her görev birkaç kez çalıştırılınca çözülme oranının çalıştırmalar arasında ne kadar oynadığı da yazılır, örneğin "%60–%80". İki sürüm arasındaki fark bu aralıktan küçükse, `--compare` tablosu onu gürültü sayar.
 
 Görev kodu bir klasörden (`project = "..."`) ya da GitHub'dan sabit bir commit'ten (`repo = "sahip/ad"`, `ref = "<commit>"`, isteğe bağlı `subdir`) gelebilir; GitHub projeleri ilk kullanımda `.repos/` altına indirilir. `benchmark/` klasöründe örnek bir proje (`projects/shop`) ve 5 görev var; her görevin kontrolü değişiklikten önce başarısız olur. Anlamlı sonuç için bunları kendi projelerinden ~20 gerçek görevle değiştir. Görev biçimi:
 
@@ -225,7 +240,10 @@ name = "discount"
 project = "projects/shop"                         # tasks.toml'a göre göreli yol
 request = "Add Cart.apply_discount(percent) ..."  # tokenwise ask'e yazacağın istek
 check = "{python} -m pytest -q {checks}/test_discount.py"   # değişiklikten sonra başarılı olmalı
+suite = "{python} -m pytest -q"   # isteğe bağlı: projenin kendi testleri, regresyon için
 ```
+
+`suite` her görev için ayrı ya da dosyanın en başında, bütün görevler için bir kez yazılabilir.
 
 Model ayarları `benchmark/` klasöründeki `tokenwise.toml`'dan okunur (yoksa varsayılanlar); yerel modelle denemek için orada `tokenwise init --local` çalıştır. Sonuçlar `benchmark/results.md`'ye tablo olarak yazılır ve her çalıştırma `benchmark/.tokenwise/ledger.db`'ye yöntem adıyla kaydedilir.
 
