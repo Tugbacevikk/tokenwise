@@ -1,0 +1,146 @@
+{
+ "attrs": {
+  "auc": {
+   "complexity": 0.646,
+   "criticality": 0.618,
+   "history": 0.539,
+   "impact": 0.537,
+   "score": 0.63,
+   "size": 0.53,
+   "tests": 0.488
+  },
+  "findings": 28
+ },
+ "axios": {
+  "auc": {
+   "complexity": 0.637,
+   "criticality": 0.521,
+   "history": 0.692,
+   "impact": 0.7,
+   "score": 0.659,
+   "size": 0.559,
+   "tests": 0.434
+  },
+  "findings": 44
+ },
+ "click": {
+  "auc": {
+   "complexity": 0.66,
+   "criticality": 0.678,
+   "history": 0.577,
+   "impact": 0.557,
+   "score": 0.722,
+   "size": 0.617,
+   "tests": 0.486
+  },
+  "findings": 53
+ },
+ "express": {
+  "auc": {
+   "complexity": 0.535,
+   "criticality": 0.598,
+   "history": 0.658,
+   "impact": 0.645,
+   "score": 0.672,
+   "size": 0.608,
+   "tests": 0.457
+  },
+  "findings": 3
+ },
+ "fastapi": {
+  "auc": {
+   "complexity": 0.767,
+   "criticality": 0.281,
+   "history": 0.8,
+   "impact": 0.533,
+   "score": 0.739,
+   "size": 0.811,
+   "tests": 0.527
+  },
+  "findings": 75
+ },
+ "flask": {
+  "auc": {
+   "complexity": 0.673,
+   "criticality": 0.749,
+   "history": 0.686,
+   "impact": 0.572,
+   "score": 0.753,
+   "size": 0.593,
+   "tests": 0.459
+  },
+  "findings": 29
+ },
+ "got": {
+  "auc": {
+   "complexity": 0.833,
+   "criticality": 0.816,
+   "history": 0.681,
+   "impact": 0.655,
+   "score": 0.887,
+   "size": 0.687,
+   "tests": 0.482
+  },
+  "findings": 61
+ },
+ "httpx": {
+  "auc": {
+   "complexity": 0.707,
+   "criticality": 0.662,
+   "history": 0.658,
+   "impact": 0.556,
+   "score": 0.706,
+   "size": 0.62,
+   "tests": 0.512
+  },
+  "findings": 15
+ },
+ "requests": {
+  "auc": {
+   "complexity": 0.776,
+   "criticality": 0.747,
+   "history": 0.62,
+   "impact": 0.666,
+   "score": 0.774,
+   "size": 0.575,
+   "tests": 0.481
+  },
+  "findings": 24
+ },
+ "rich": {
+  "auc": {
+   "complexity": 0.594,
+   "criticality": 0.501,
+   "history": 0.545,
+   "impact": 0.55,
+   "score": 0.526,
+   "size": 0.555,
+   "tests": 0.494
+  },
+  "findings": 101
+ },
+ "typer": {
+  "auc": {
+   "complexity": 0.663,
+   "criticality": 0.491,
+   "history": 0.545,
+   "impact": 0.528,
+   "score": 0.594,
+   "size": 0.506,
+   "tests": 0.499
+  },
+  "findings": 63
+ },
+ "zod": {
+  "auc": {
+   "complexity": 0.77,
+   "criticality": 0.82,
+   "history": 0.737,
+   "impact": 0.694,
+   "score": 0.81,
+   "size": 0.679,
+   "tests": 0.337
+  },
+  "findings": 233
+ }
+}

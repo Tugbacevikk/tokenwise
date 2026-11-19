@@ -18,6 +18,13 @@ First release.
   $0.50 (`TOKENWISE_MAX_USD_PER_FIX`), which a repository cannot raise.
 - README: "Bu ölçümlerin sınırları" — what the published numbers do and do not show.
 
+- Independent verification kit (docs/verification.md): `benchmark/reproduce/run.py` and a
+  "reproduce measurements" workflow re-run the 12-repository measurements from pinned
+  commits and fail when numbers drift; `benchmark/labeling/` builds fixed-seed review sheets
+  (findings, "sorunlu" commit labels) for human reviewers and scores them with Wilson
+  intervals and Cohen's kappa. `tokenwise calibrate --json --samples` lists each scored
+  commit and the fix behind its label.
+
 - Privacy: the worker deletes records past their keeping period about once an hour
   (expired sessions, finished jobs and orphan users after 30 days, removed installations
   after 90). Owners can download everything stored for their organization as JSON; anyone

@@ -746,6 +746,9 @@ def calibrate(
     ),
     save: bool = typer.Option(False, "--save", help="Use the suggested weights for this project."),
     as_json: bool = typer.Option(False, "--json"),
+    samples: bool = typer.Option(
+        False, "--samples", help="With --json: every scored commit, its label and the fix."
+    ),
 ) -> None:
     """ReleaseGuard: replay past commits as PRs and measure how well each risk signal predicted
     the ones that needed a fix later (AUC). Reads git only; no model is called."""
@@ -764,7 +767,7 @@ def calibrate(
     except CalibrationError as exc:
         _fail(str(exc), as_json)
     if as_json:
-        print(json.dumps(result.to_dict(), ensure_ascii=False))
+        print(json.dumps(result.to_dict(samples=samples), ensure_ascii=False))
         return
     console.print(
         f"{len(result.samples)} commits scored · {result.positives} needed a fix within "
