@@ -7,6 +7,12 @@ a change that breaks existing use bumps major.
 
 First release.
 
+- `max_usd_per_request`: a ceiling for one request, escalation included. Each call's
+  output is capped to what the rest pays for (pessimistic input estimate); a call that does
+  not fit is not made and the best proposal so far is kept. Hosted AI fixes default to
+  $0.50 (`TOKENWISE_MAX_USD_PER_FIX`), which a repository cannot raise.
+- README: "Bu ölçümlerin sınırları" — what the published numbers do and do not show.
+
 - Privacy: the worker deletes records past their keeping period about once an hour
   (expired sessions, finished jobs and orphan users after 30 days, removed installations
   after 90). Owners can download everything stored for their organization as JSON; anyone

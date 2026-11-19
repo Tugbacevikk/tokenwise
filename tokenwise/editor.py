@@ -9,6 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .budget import RequestBudgetExceeded
 from .config import Settings
 from .focus import focused_view
 from .guard import problems as guard_problems
@@ -295,12 +296,15 @@ def propose(
             prompt = build_prompt(
                 request, paths, settings.root, all_files, feedback, focus, settings.focus_lines
             )
-            reply = llm.complete(
-                model=model,
-                system=EDITOR_SYSTEM,
-                prompt=prompt,
-                max_tokens=settings.max_output_tokens,
-            )
+            try:
+                reply = llm.complete(
+                    model=model,
+                    system=EDITOR_SYSTEM,
+                    prompt=prompt,
+                    max_tokens=settings.max_output_tokens,
+                )
+            except RequestBudgetExceeded as exc:  # the ceiling ends escalation here
+                return _out_of_budget(last, replies, paths, str(exc))
             reply.role = "editor"
             replies.append(reply)
 
@@ -364,6 +368,15 @@ def propose(
         return last
     detail = f"; last problem: {last_problem}" if last_problem else ""
     return Proposal([], replies, paths, error=f"no applicable edit from {tried}{detail}")
+
+
+def _out_of_budget(last: Proposal | None, replies: list[Reply], paths: list[str],
+                   why: str) -> Proposal:  # fmt: skip
+    """The best proposal so far (one whose check failed), or none, with the reason."""
+    if last is not None:
+        last.replies, last.error = replies, f"{why}; the check still fails"
+        return last
+    return Proposal([], replies, paths, error=why)
 
 
 def apply_changes(settings: Settings, changes: list[Change]) -> None:

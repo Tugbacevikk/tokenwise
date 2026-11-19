@@ -34,6 +34,7 @@ class ServerConfig:
     scan_tools: tuple[str, ...] = ("ruff", "bandit")
     allowed_model_urls: tuple[str, ...] = ()  # OpenAI-compatible servers owners may choose
     work_dir: str = ""  # clones and check copies; must be the same path on the Docker host
+    max_usd_per_fix: float = 0.5  # one AI fix's ceiling on the organization's key; 0 = none
     github: dict = field(default_factory=dict)
 
     @classmethod
@@ -53,6 +54,7 @@ class ServerConfig:
             sandbox_runtime=os.getenv("TOKENWISE_SANDBOX_RUNTIME", ""),
             metrics_token=os.getenv("TOKENWISE_METRICS_TOKEN", ""),
             scan_tools=_split(os.getenv("TOKENWISE_SCAN_TOOLS", "ruff,bandit")),
+            max_usd_per_fix=float(os.getenv("TOKENWISE_MAX_USD_PER_FIX", "0.5")),
             allowed_model_urls=_split(os.getenv("TOKENWISE_ALLOWED_MODEL_URLS", "")),
             work_dir=os.getenv("TOKENWISE_WORK_DIR", ""),
             github={
@@ -111,6 +113,7 @@ def repo_settings(root: Path, server: ServerConfig, org: dict | None = None) -> 
     settings.sandbox_image = server.sandbox_image
     settings.sandbox_runtime = server.sandbox_runtime
     settings.scan_tools = server.scan_tools
+    settings.max_usd_per_request = server.max_usd_per_fix  # a repository cannot raise it
     settings.cache = False
     org = org or {}
     settings.provider = org.get("model_provider") or "anthropic"
