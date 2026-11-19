@@ -74,6 +74,9 @@ def test_calibration_finds_the_risky_module(history_repo):
     assert result.auc["criticality"] > 0.75 and result.auc["complexity"] > 0.75
     assert result.auc["size"] is not None and result.auc["score"] > 0.75
     assert result.suggested and result.suggested["criticality"] > 0
+    # each label names the fix behind it, so a person can check it (benchmark/labeling)
+    assert all(bool(s.fixed_by) == s.regression for s in result.samples)
+    assert "samples" not in result.to_dict() and result.to_dict(samples=True)["samples"]
     path = save_weights(settings, result)
     assert path == weights_path(settings)
     assert load_weights(settings) == result.suggested

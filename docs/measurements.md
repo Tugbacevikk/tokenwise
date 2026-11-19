@@ -105,6 +105,8 @@ AUC 0,5 yazı-tura demektir, 1 ise mükemmel ayırmadır.
 
 ## Tekrar üretmek
 
+Bütün tabloyu tek komutla tekrar üretmek ve insanların kontrol etmesi için: [verification.md](verification.md).
+
 ```bash
 git clone https://github.com/pallets/flask && cd flask
 tokenwise scan --tools ruff,bandit --json

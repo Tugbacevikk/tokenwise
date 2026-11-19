@@ -39,6 +39,7 @@ class Sample:
     regression: bool
     values: dict[str, float]
     score: int
+    fixed_by: str = ""  # the later fix that made it a regression (for checking the label)
 
 
 @dataclass
@@ -55,10 +56,11 @@ class Calibration:
     def positives(self) -> int:
         return sum(s.regression for s in self.samples)
 
-    def to_dict(self) -> dict:
+    def to_dict(self, samples: bool = False) -> dict:
         data = asdict(self)
         data["positives"] = self.positives
-        data.pop("samples")
+        if not samples:
+            data.pop("samples")
         data["sample_count"] = len(self.samples)
         return data
 
@@ -220,10 +222,9 @@ def calibrate(
         for i, entry in enumerate(log):
             if i in chosen:
                 mine = code_files(entry)
-                regression = any(
-                    later.commit.is_fix and mine & set(later.stats)
-                    for later in log[i + 1 : i + 1 + window]
-                )
+                fix = next((later.commit.sha[:12] for later in log[i + 1 : i + 1 + window]
+                            if later.commit.is_fix and mine & set(later.stats)), "")  # fmt: skip
+                regression = bool(fix)
                 tree = tree_sources(settings, entry.commit.sha)
                 files = sorted(tree)
                 graph = build_graph(settings, files, read=lambda p, t=tree: blobs.read(t[p]))
@@ -241,6 +242,7 @@ def calibrate(
                         sha=entry.commit.sha[:12],
                         subject=entry.commit.subject,
                         regression=regression,
+                        fixed_by=fix,
                         values={s.name: round(s.value, 4) for s in report.signals},
                         score=report.score,
                     )

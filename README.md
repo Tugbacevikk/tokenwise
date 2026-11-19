@@ -271,7 +271,10 @@ Buradaki ve [docs/measurements.md](docs/measurements.md)'deki sayılar projenin 
   - Ölçüm 10 açık kaynak depoda yapıldı. Başka dillerde ve şirket içi kodda sonuç farklı olabilir.
 - **Yanlış alarm oranı (~%10):** 394 bulgunun 47'sinden oluşan bir örneklem üzerinden. Etiketleri bir insan değil, yapay zekâ (Claude) koydu. Gerçek oranı, beta kullanıcılarının "Yok say / Çözüldü" kararları `tokenwise findings --stats` ile gösterecek.
 
-Tekrar üretme adımları: [docs/measurements.md#tekrar-üretmek](docs/measurements.md#tekrar-üretmek).
+Bu sayıları başkalarının nasıl kontrol edeceği [docs/verification.md](docs/verification.md)'de anlatılıyor:
+- **Tekrar üretme:** tek komutla ya da GitHub Actions'ta, sabit commit'lerden. 19 Kasım 2026'da GitHub'ın makinesinde aynı sayılar çıktı.
+- **İnsan etiketleri:** iki dış gözden geçirenin dolduracağı tablolar.
+- **Görülmemiş görevler:** dış kullanıcıların yazacağı görevlerle ölçüm.
 
 Gerçek modelle ölçmek için (projeler sabit commit'lerinden otomatik indirilir):
 
