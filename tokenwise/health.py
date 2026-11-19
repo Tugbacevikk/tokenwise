@@ -389,9 +389,12 @@ _TASKS = {
     "missing-tests": "{file} için testler yaz: dışarıya açık fonksiyonların normal ve hata"
     " durumlarını kapsa. Projedeki mevcut test düzenini izle; {file} dosyasını değiştirme.",
     "shell-command": "{file} satır {line} civarındaki kabukla komut çalıştırmayı güvenli hale"
-    " getir: mümkünse shell=True yerine argüman listesi kullan. Davranışı koru.",
-    "dynamic-code": "{file} satır {line} civarındaki eval/exec kullanımını güvenli bir"
-    " alternatifle değiştir.",
+    " getir: kabuk yerine argüman listesi kullan (Python'da shell=True yerine liste, Node'da"
+    " exec yerine execFile). Davranışı koru.",
+    "dynamic-code": "{file} satır {line} civarındaki eval/exec/new Function kullanımını güvenli"
+    " bir alternatifle değiştir.",
+    "unsafe-html": "{file} satır {line} civarında HTML'e hesaplanan değer yazılmasını güvenli"
+    " hale getir: düz metin için textContent kullan, HTML gerekiyorsa değeri temizle.",
     "unsafe-yaml": "{file} satır {line} civarındaki yaml.load çağrısını yaml.safe_load ile"
     " değiştir.",
     "unsafe-deserialize": "{file} satır {line} civarındaki güvensiz deserializasyonu güvenli bir"

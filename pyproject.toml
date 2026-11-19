@@ -43,8 +43,16 @@ server = [
     "tree-sitter>=0.23",
     "tree-sitter-javascript>=0.23",
     "tree-sitter-typescript>=0.23",
+    "tree-sitter-go>=0.23",
+    "tree-sitter-java>=0.23",
 ]
-impact = ["tree-sitter>=0.23", "tree-sitter-javascript>=0.23", "tree-sitter-typescript>=0.23"]
+impact = [
+    "tree-sitter>=0.23",
+    "tree-sitter-javascript>=0.23",
+    "tree-sitter-typescript>=0.23",
+    "tree-sitter-go>=0.23",
+    "tree-sitter-java>=0.23",
+]
 dev = [
     "pytest>=8",
     "pytest-cov>=5",
@@ -59,6 +67,8 @@ dev = [
     "tree-sitter>=0.23",
     "tree-sitter-javascript>=0.23",
     "tree-sitter-typescript>=0.23",
+    "tree-sitter-go>=0.23",
+    "tree-sitter-java>=0.23",
 ]
 
 [project.scripts]

@@ -141,7 +141,7 @@ def target_complexity(root: Path, paths: list[str], focus: dict[str, list[str]] 
     """The most tangled function the change is about: the focused functions when the
     selector named them, else every function in the chosen files. 0 when none is known."""
     from .analyzers import _functions, complexity
-    from .callgraph import js_function_sizes
+    from .callgraph import function_sizes
 
     worst = 0
     for rel in paths:
@@ -157,7 +157,7 @@ def target_complexity(root: Path, paths: list[str], focus: dict[str, list[str]] 
                 continue
             found = [(name, complexity(node)) for name, node in _functions(tree)]
         else:
-            found = [(d.name, score) for d, score in js_function_sizes(rel, source)]
+            found = [(d.name, score) for d, score in function_sizes(rel, source)]
         for name, score in found:
             if not wanted or name in wanted or name.rsplit(".", 1)[-1] in wanted:
                 worst = max(worst, score)

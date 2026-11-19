@@ -1,6 +1,7 @@
 """Which file imports which: the dependency graph shared by the agent, the health scan and the
-release check. Python imports are read with `ast`; JavaScript and TypeScript relative imports
-with a pattern. Nothing here calls a model."""
+release check. Python imports are read with `ast`; JavaScript and TypeScript imports with
+Tree-sitter, so an import inside a comment or a string is not counted (a pattern is the
+fallback when Tree-sitter is not installed). Nothing here calls a model."""
 
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
+from . import syntax
 from .config import Settings
 from .repo_map import is_test_file, list_source_files
 from .textio import read_source
@@ -348,12 +350,15 @@ def build_graph(
             for name in names[: 2 if names[0].startswith("src.") else 1]:
                 rooted.setdefault(name, path)
 
+    other: dict[str, str] = {}  # Go and Java sources, linked once every file is read
     for path in files:
         try:
             source = read(path)
         except (OSError, ValueError, KeyError):
             continue
-        if path.endswith(".py"):
+        if path.endswith((".go", ".java")):
+            other[path] = source
+        elif path.endswith(".py"):
             for names, runtime, absolute in _python_imports(path, source):
                 # `import json` is the standard library, not flask/json/: a stdlib name only
                 # matches a module that really sits at the top of the project
@@ -362,12 +367,82 @@ def build_graph(
                 if target:
                     graph.add(path, target, runtime)
         elif path.endswith(_JS_EXT):
-            for match in _JS_IMPORT.finditer(source):
-                target = _resolve_js(path, match.group(1), file_set, packages)
+            for spec, runtime in js_imports(path, source):
+                target = _resolve_js(path, spec, file_set, packages)
                 if target:
-                    text = match.group(0)
-                    lazy = text.startswith(("import(", "import (")) or re.match(
-                        r"(import|export)\s+type\b", text
-                    )
-                    graph.add(path, target, not lazy)
+                    graph.add(path, target, runtime)
+    _link_go_and_java(graph, settings, other)
     return graph
+
+
+def _link_go_and_java(graph: Graph, settings: Settings, sources: dict[str, str]) -> None:
+    from .lang_graph import go_edges, go_modules, java_edges
+
+    go = [p for p in sources if p.endswith(".go")]
+    java = [p for p in sources if p.endswith(".java")]
+    edges = java_edges(java, sources) if java else []
+    if go:
+        edges += go_edges(go, sources, go_modules(settings.root, settings.ignore_dirs))
+    for src, dst in edges:
+        graph.add(src, dst, runtime=False)  # see lang_graph: never an import cycle
+
+
+_JS_SCOPES = syntax.JAVASCRIPT.functions | syntax.JAVASCRIPT.anonymous
+
+
+def js_imports(path: str, source: str) -> list[tuple[str, bool]]:
+    """(specifier, runtime) for every import. Runtime means it runs when the module loads:
+    not `import type`, not a dynamic `import()`, not a `require()` inside a function. Only
+    runtime imports can make an import cycle."""
+    tree = syntax.parse(path, source)
+    if tree is None:
+        return _js_imports_by_pattern(source)
+    found: list[tuple[str, bool]] = []
+
+    def visit(node, in_function: bool) -> None:
+        for child in node.children:
+            spec, runtime = _js_import(child, in_function)
+            if spec is not None:
+                found.append((spec, runtime))
+            visit(child, in_function or child.type in _JS_SCOPES)
+
+    visit(tree.root_node, False)
+    return found
+
+
+def _js_import(node, in_function: bool) -> tuple[str | None, bool]:
+    if node.type in ("import_statement", "export_statement"):
+        return _static_import(node, in_function)
+    if node.type == "call_expression":
+        return _call_import(node, in_function)
+    return None, False
+
+
+def _static_import(node, in_function: bool) -> tuple[str | None, bool]:
+    source = node.child_by_field_name("source")
+    clause = next((c for c in node.children if c.type == "import_require_clause"), None)
+    if source is None and clause is not None:  # TypeScript: import x = require("y")
+        source = next((c for c in clause.children if c.type == "string"), None)
+    type_only = any(c.type == "type" for c in node.children)
+    return syntax.string_value(source), not type_only and not in_function
+
+
+def _call_import(node, in_function: bool) -> tuple[str | None, bool]:
+    func, args = node.child_by_field_name("function"), node.child_by_field_name("arguments")
+    first = args.named_children[0] if args is not None and args.named_children else None
+    if func is not None and func.type == "import":  # import("./x") loads later
+        return syntax.string_value(first), False
+    if func is not None and func.type == "identifier" and syntax.text(func) == "require":
+        return syntax.string_value(first), not in_function
+    return None, False
+
+
+def _js_imports_by_pattern(source: str) -> list[tuple[str, bool]]:
+    found = []
+    for match in _JS_IMPORT.finditer(source):
+        text = match.group(0)
+        lazy = text.startswith(("import(", "import (")) or re.match(
+            r"(import|export)\s+type\b", text
+        )
+        found.append((match.group(1), not lazy))
+    return found

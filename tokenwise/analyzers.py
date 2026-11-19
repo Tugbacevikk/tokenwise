@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from .config import Settings
 from .graph import Graph
 from .repo_map import is_support_file, is_test_file
+from .syntax import language_for
 from .textio import read_source
 
 SEVERITIES = ("high", "medium", "low")
@@ -22,7 +23,6 @@ COMPLEXITY_HIGH = 20
 LONG_FUNCTION = 80
 LARGE_FILE = 600
 TODO_MIN = 3
-JS_EXTENSIONS = (".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx")
 
 _TODO = re.compile(r"\b(TODO|FIXME|XXX|HACK)\b")
 _SECRETS = (
@@ -140,23 +140,43 @@ def size_findings(path: str, name: str, score: int, length: int, line: int) -> l
     return found
 
 
-def js_findings(path: str, source: str) -> list[Finding]:
-    """Complexity and length of JS/TS functions (needs Tree-sitter; nothing without it)."""
-    from .callgraph import js_function_sizes
+def tree_findings(path: str, source: str) -> list[Finding]:
+    """Function size, and for JavaScript/TypeScript security, in a Tree-sitter language
+    (JavaScript, TypeScript, Go, Java). Nothing when its grammar is not installed."""
+    from .callgraph import definitions, enclosing, function_sizes
+    from .js_security import security_hits
 
     found = []
-    for definition, score in js_function_sizes(path, source):
+    for definition, score in function_sizes(path, source):
         length = definition.end - definition.start + 1
         found += size_findings(path, definition.name, score, length, definition.start)
+    hits = security_hits(path, source)
+    defs = definitions(path, source) if hits else []
+    for hit in hits:
+        found.append(
+            Finding(
+                hit.rule,
+                "security",
+                "medium",
+                path,
+                hit.title,
+                hit.detail,
+                hit.line,
+                f"{hit.call}@{enclosing(defs, hit.line)}",
+            )
+        )
     return found
+
+
+js_findings = tree_findings  # the name from when only JavaScript was parsed
 
 
 def code_findings(path: str, source: str) -> list[Finding]:
     """Function-level findings for a source file in a language we can parse."""
     if path.endswith(".py"):
         return python_findings(path, source)
-    if path.endswith(JS_EXTENSIONS) and not path.endswith(".d.ts"):
-        return js_findings(path, source)
+    if language_for(path) is not None:
+        return tree_findings(path, source)
     return []
 
 
