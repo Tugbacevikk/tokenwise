@@ -220,6 +220,7 @@ Worker müşteri kodunu (projenin kontrol komutunu) çalıştıran tek parçadı
 | `TOKENWISE_SANDBOX_IMAGE` | hayır | Kontrol imajı; varsayılan `python:3.12-slim` |
 | `TOKENWISE_SANDBOX_RUNTIME` | hayır | `runsc` = gVisor; boşsa Docker'ın varsayılanı |
 | `TOKENWISE_METRICS_TOKEN` | hayır | `/metrics` için bearer token; boşsa bu adres yok |
+| `TOKENWISE_MAX_USD_PER_FIX` | hayır | Tek bir AI düzeltmesinin organization'ın anahtarıyla en çok harcayabileceği tutar (USD). Varsayılan `0.5`; `0` = sınır yok. Depodaki `tokenwise.toml` bunu yükseltemez |
 | `TOKENWISE_SCAN_TOOLS` | hayır | Varsayılan `ruff,bandit`; ayrıca `coverage` (depodaki `coverage.json` / `coverage.xml` okunur) |
 | `TOKENWISE_ALLOWED_MODEL_URLS` | hayır | Sahiplerin seçebileceği OpenAI uyumlu adresler; boşsa yalnızca Anthropic kullanılabilir |
 | `TOKENWISE_WORK_DIR` | worker | Klonlar ve kontrol kopyaları için klasör. Docker host'unda da aynı yolda olmalı |

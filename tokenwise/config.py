@@ -57,6 +57,8 @@ focus_lines = 300
 map_max_tokens = {map_max_tokens}
 # Stop asking once the last 7 days cost this much (USD). 0 = no limit.
 budget_usd_week = 0
+# Most one request may cost (USD), escalation to stronger models included. 0 = no limit.
+max_usd_per_request = 0
 # Ollama only: the largest context window tokenwise may ask for. Bigger needs more GPU memory.
 max_context = 32768
 # Command that must pass before a change is offered, run in a throwaway copy of the project.
@@ -103,6 +105,7 @@ class Settings:
     max_files: int = 8
     focus_lines: int = 300
     budget_usd_week: float = 0.0
+    max_usd_per_request: float = 0.0  # one request's ceiling, escalation included (budget.py)
     max_context: int = 32768
     map_max_tokens: int = 16000
     max_output_tokens: int = 4096

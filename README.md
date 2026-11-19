@@ -136,6 +136,21 @@ budget_usd_week = 2.0
 
 Son 7 günün harcaması bu tutara ulaşınca `tokenwise ask` modeli hiç çağırmadan durur (`--over-budget` ile aşılabilir). Her istekten sonra harcanan/limit gösterilir, %80'i geçince sarıya döner; `tokenwise report` ve VS Code paneli de bütçe durumunu gösterir.
 
+### İstek başına bütçe
+
+```toml
+[tokenwise]
+max_usd_per_request = 0.10
+```
+
+Haftalık bütçe yeni istekleri durdurur, ama tek bir isteğin daha güçlü modellere geçerken ne kadar harcayacağını sınırlamaz. Bu ayar sınırlar:
+- Her model çağrısından önce girdinin maliyeti tahmin edilir. Tahmin bilerek kötümser tutulur: yaklaşık 4 karakter = 1 token, üstüne %20 pay ve önbelleksiz fiyat.
+- Modelin cevabının uzunluğu (`max_tokens`), kalan payın karşılayabileceği kadarla sınırlanır.
+- Kısa bir cevap için bile pay kalmamışsa çağrı hiç yapılmaz. O ana kadar en iyi öneri varsa o gösterilir.
+- Fiyatı bilinmeyen modeller (yerel modeller) bu sınıra girmez.
+
+Barındırılan sürümde her AI düzeltmesinin varsayılan sınırı $0,50'dir (`TOKENWISE_MAX_USD_PER_FIX`). Depodaki `tokenwise.toml` bu sınırı yükseltemez.
+
 ### Önbellek
 
 Cevaplar `.tokenwise/cache.db` (SQLite) içinde tutulur. Anahtar; model, talimat ve dosya içerikleri dahil tüm istek metnidir. Gönderilen bir dosya değişirse anahtar da değişir, bu yüzden eski bir cevap asla yanlış dosyaya uygulanmaz.
@@ -241,6 +256,22 @@ Neyi göstermiyor:
 - Prompt caching etkisini. Aynı projeye art arda istekte her iki yöntem de önbellekten yararlanır.
 
 Büyük projelerde (`sesli-asistan-gateway`, `kelime-kelime`) baseline tek istekte 225–366 bin token gönderiyor; bu, bağlam sınırı ve fiyat kademesi yüzünden pratikte zor. tokenwise'ın girişinin çoğu ise ucuz modelin okuduğu proje haritası; harita `map_max_tokens` bütçesine sığacak şekilde kısaltılır (önce testler, sonra ayrıntılar).
+
+#### Bu ölçümlerin sınırları
+
+Buradaki ve [docs/measurements.md](docs/measurements.md)'deki sayılar projenin kendi ölçümleridir. Henüz kimse bunları bağımsız olarak tekrar çalıştırmadı. Okurken şunları bil:
+
+- **Yerel model denemesi (15/18):**
+  - Tek bir bilgisayarda, tek seferlik bir çalıştırma; güven aralığı yok.
+  - Görevleri ve kontrol betiklerini tokenwise'ı geliştirenler yazdı; görevler de kendi projelerinden alındı.
+  - Üç turun arasında tokenwise bu görevlerdeki hatalara göre düzeltildi. Yani son tur, aynı görevlere göre iyileştirilmiş bir sürümü ölçüyor; yeni görevlerde başarı daha düşük olabilir.
+- **Maliyet tahmini (−98%):** Model çağrılmadan, elle yazılmış en iyi cevapla hesaplandı (yukarıdaki "Neyi göstermiyor" listesi). Gerçek kullanımdaki tasarruf daha az olacaktır.
+- **Risk skoru (AUC 0,68–0,77):**
+  - "Sorunlu commit" etiketi bir varsayıma dayanıyor: sonraki 20 commit içinde aynı koda dokunan bir hata düzeltmesi. Bu etiket gerçek hataları tam yansıtmaz.
+  - Ölçüm 10 açık kaynak depoda yapıldı. Başka dillerde ve şirket içi kodda sonuç farklı olabilir.
+- **Yanlış alarm oranı (~%10):** 394 bulgunun 47'sinden oluşan bir örneklem üzerinden. Etiketleri bir insan değil, yapay zekâ (Claude) koydu. Gerçek oranı, beta kullanıcılarının "Yok say / Çözüldü" kararları `tokenwise findings --stats` ile gösterecek.
+
+Tekrar üretme adımları: [docs/measurements.md#tekrar-üretmek](docs/measurements.md#tekrar-üretmek).
 
 Gerçek modelle ölçmek için (projeler sabit commit'lerinden otomatik indirilir):
 

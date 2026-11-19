@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .budget import BudgetedLLM, RequestBudgetExceeded
 from .checker import make_verifier
 from .config import Settings
 from .editor import Change, propose
@@ -106,7 +107,22 @@ class Result:
 def run(
     request: str, settings: Settings, llm: LLM, model: str = "", files: list[str] | None = None
 ) -> Result:
-    """`files`: the user picked the files, so the cheap selector is skipped entirely."""
+    """`files`: the user picked the files, so the cheap selector is skipped entirely.
+    With `max_usd_per_request` set, every model call of the request shares that ceiling."""
+    if not settings.max_usd_per_request:
+        return _run(request, settings, llm, model, files)
+    budgeted = BudgetedLLM(llm, settings.max_usd_per_request, settings.prices)
+    try:
+        return _run(request, settings, budgeted, model, files)
+    except RequestBudgetExceeded as exc:
+        result = Result(request=request, prices=settings.prices, check=settings.check)
+        result.replies = budgeted.replies  # what was spent before the ceiling stopped it
+        result.model = exc.model
+        result.error = str(exc)
+        return result
+
+
+def _run(request: str, settings: Settings, llm: LLM, model: str, files: list[str] | None) -> Result:
     result = Result(request=request, prices=settings.prices, check=settings.check)
     all_files = list_source_files(settings)
     if files:
