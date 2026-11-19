@@ -12,14 +12,13 @@ import ast
 import re
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
-from functools import cache
 from pathlib import Path
 
+from . import syntax
 from .graph import Graph
 from .history import git
 from .repo_map import is_test_file
 
-_JS_EXT = (".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx")
 _HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.M)
 MAX_LISTED = 8
 
@@ -86,88 +85,68 @@ def _python_calls(source: str) -> list[tuple[str, int]]:
     return calls
 
 
-# ---------------------------------------------------------------- JavaScript / TypeScript
-
-
-@cache
-def _parser(suffix: str):
-    try:
-        from tree_sitter import Language, Parser
-    except ImportError:
-        return None
-    try:
-        if suffix in (".ts", ".tsx"):
-            import tree_sitter_typescript as ts
-
-            lang = ts.language_tsx() if suffix == ".tsx" else ts.language_typescript()
-        else:
-            import tree_sitter_javascript as js
-
-            lang = js.language()
-    except ImportError:
-        return None
-    return Parser(Language(lang))
+# ---------------------------------------------------------------- Tree-sitter languages
+# JavaScript, TypeScript, Go and Java; syntax.py says what counts as a function in each.
 
 
 def tree_sitter_available() -> bool:
-    return _parser(".ts") is not None and _parser(".js") is not None
+    return syntax.available(syntax.JAVASCRIPT)
 
 
-def _js_tree(path: str, source: str):
-    parser = _parser(Path(path).suffix)
-    return None if parser is None else parser.parse(source.encode("utf-8"))
+def _receiver(node) -> str:
+    """`Svc.` for the Go method `func (s *Svc) Run()`."""
+    receiver = node.child_by_field_name("receiver")
+    for child in syntax.walk(receiver) if receiver is not None else ():
+        if child.type == "type_identifier":
+            return syntax.text(child) + "."
+    return ""
 
 
-def _text(node) -> str:
-    return node.text.decode("utf-8", errors="replace") if node is not None else ""
+def _function_name(lang: syntax.Lang, node) -> tuple[str, str, object] | None:
+    """(type prefix, name, body) when `node` defines a named function, else None."""
+    if node.type in lang.functions:
+        name = syntax.text(node.child_by_field_name("name"))
+        if not name:
+            return None
+        own = _receiver(node) if lang is syntax.GO and node.type == "method_declaration" else ""
+        return own, name, node
+    if node.type == "variable_declarator":  # const f = () => ..., Runnable r = () -> ...
+        value = node.child_by_field_name("value")
+        name = syntax.text(node.child_by_field_name("name"))
+        if value is not None and value.type in lang.anonymous and name:
+            return "", name, value
+    return None
 
 
-def _js_units(path: str, source: str) -> list[tuple[Definition, object]]:
+def _units(path: str, source: str) -> list[tuple[Definition, object]]:
     """Every named function, method and function-valued variable, with its syntax node."""
-    tree = _js_tree(path, source)
-    if tree is None:
+    lang, tree = syntax.language_for(path), syntax.parse(path, source)
+    if lang is None or tree is None:
         return []
     found: list[tuple[Definition, object]] = []
 
     def visit(node, prefix: str, in_function: bool = False) -> None:
         for child in node.children:
-            kind = child.type
             name_node = child.child_by_field_name("name")
-            if kind in ("class_declaration", "class", "abstract_class_declaration") and (
-                name_node is not None
-            ):
-                visit(child, prefix + _text(name_node) + ".", in_function)
+            if child.type in lang.containers and name_node is not None:
+                visit(child, prefix + syntax.text(name_node) + ".", in_function)
                 continue
-            simple, body = "", child
-            if kind in ("function_declaration", "generator_function_declaration",
-                        "method_definition"):  # fmt: skip
-                simple = _text(name_node)
-            elif kind == "variable_declarator":
-                value = child.child_by_field_name("value")
-                if value is not None and value.type in _JS_FUNCTIONS:
-                    simple, body = _text(name_node), value
-            if simple:
-                name = prefix + simple
+            named = _function_name(lang, child)
+            if named:
+                own, simple, body = named
+                name = prefix + own + simple
                 start, end = child.start_point[0] + 1, child.end_point[0] + 1
                 found.append((Definition(start, end, name, simple, in_function), body))
                 visit(child, name + ".", True)
             else:
                 # an anonymous function's body is still inside a function
-                visit(child, prefix, in_function or kind in _JS_FUNCTIONS)
+                visit(child, prefix, in_function or child.type in lang.anonymous)
 
     visit(tree.root_node, "")
     return found
 
 
-_JS_FUNCTIONS = ("arrow_function", "function_expression", "function", "generator_function")
-_JS_BRANCHES = {
-    "if_statement", "for_statement", "for_in_statement", "while_statement", "do_statement",
-    "catch_clause", "ternary_expression", "switch_case",
-}  # fmt: skip
-_JS_LOGIC = {"&&", "||", "??"}
-
-
-def js_complexity(node, units: set[tuple[int, int]]) -> int:
+def tree_complexity(lang: syntax.Lang, node, units: set[tuple[int, int]]) -> int:
     """McCabe-style count like the Python one: 1 + one per branch point. Named functions
     inside are counted on their own; anonymous callbacks count toward the enclosing one."""
     count = 1
@@ -176,48 +155,72 @@ def js_complexity(node, units: set[tuple[int, int]]) -> int:
         child = stack.pop()
         if (child.start_byte, child.end_byte) in units:
             continue
-        if child.type in _JS_BRANCHES:
+        kind = child.type
+        if kind in lang.branches:
             count += 1
-        elif child.type == "binary_expression":
+        elif kind in lang.cases:
+            count += not (child.children and child.children[0].type == "default")
+        elif kind == "binary_expression":
             operator = child.child_by_field_name("operator")
-            if operator is not None and operator.type in _JS_LOGIC:
+            if operator is not None and operator.type in lang.logic:
                 count += 1
         stack.extend(child.children)
     return count
 
 
-def js_function_sizes(path: str, source: str) -> list[tuple[Definition, int]]:
-    """(definition, complexity) for every named JS/TS function; empty without Tree-sitter."""
-    found = _js_units(path, source)
+def function_sizes(path: str, source: str) -> list[tuple[Definition, int]]:
+    """(definition, complexity) for every named function in a Tree-sitter language; empty
+    when the file is not one or its grammar is not installed."""
+    lang = syntax.language_for(path)
+    found = _units(path, source)
     units = {(body.start_byte, body.end_byte) for _, body in found}
     units |= {(b.parent.start_byte, b.parent.end_byte) for _, b in found if b.parent is not None
               and b.parent.type == "variable_declarator"}  # fmt: skip
-    return [(d, js_complexity(body, units)) for d, body in found]
+    return [(d, tree_complexity(lang, body, units)) for d, body in found]
 
 
-def _js_definitions(path: str, source: str) -> list[Definition]:
-    return [d for d, _ in _js_units(path, source)]
+js_function_sizes = function_sizes  # the name from when only JavaScript was parsed
+
+_CALL_NODES = ("call_expression", "new_expression", "method_invocation",
+               "object_creation_expression")  # fmt: skip
+_NAMES = ("identifier", "property_identifier", "type_identifier", "field_identifier")
 
 
-def _js_calls(path: str, source: str) -> list[tuple[str, int]]:
-    tree = _js_tree(path, source)
+def _callee(node) -> str:
+    """The called name: `save` for `repo.save(x)`, `Order` for `new Order()`."""
+    if node.type == "method_invocation":
+        return syntax.text(node.child_by_field_name("name"))
+    func = next((node.child_by_field_name(f) for f in ("function", "constructor", "type")
+                 if node.child_by_field_name(f) is not None), None)  # fmt: skip
+    if func is not None and func.type == "member_expression":
+        func = func.child_by_field_name("property")
+    elif func is not None and func.type == "selector_expression":
+        func = func.child_by_field_name("field")
+    func = _type_name(func)
+    return syntax.text(func) if func is not None and func.type in _NAMES else ""
+
+
+def _type_name(node):
+    """List<T> -> List, java.util.List -> List; anything else as it is."""
+    while node is not None and node.type in ("generic_type", "scoped_type_identifier"):
+        inner = [c for c in node.children if c.type.endswith("type_identifier")]
+        if not inner:
+            return None
+        node = inner[0] if node.type == "generic_type" else inner[-1]
+    return node
+
+
+def _tree_calls(path: str, source: str) -> list[tuple[str, int]]:
+    tree = syntax.parse(path, source)
     if tree is None:
         return []
-    calls = []
-    stack = [tree.root_node]
-    while stack:
-        node = stack.pop()
-        if node.type in ("call_expression", "new_expression"):
-            func = node.child_by_field_name("function") or node.child_by_field_name("constructor")
-            if func is not None:
-                if func.type == "member_expression":
-                    func = func.child_by_field_name("property")
-                if func is not None and func.type in (
-                    "identifier", "property_identifier", "type_identifier"
-                ):  # fmt: skip
-                    calls.append((_text(func), node.start_point[0] + 1))
-        stack.extend(node.children)
-    return calls
+    found = []
+    for node in syntax.walk(tree.root_node):
+        if node.type in _CALL_NODES:
+            name = _callee(node)
+            if name:
+                found.append((name, node.start_point[0] + 1))
+    return found
 
 
 # ---------------------------------------------------------------- shared
@@ -226,17 +229,13 @@ def _js_calls(path: str, source: str) -> list[tuple[str, int]]:
 def definitions(path: str, source: str) -> list[Definition]:
     if path.endswith(".py"):
         return _python_definitions(source)
-    if path.endswith(_JS_EXT):
-        return _js_definitions(path, source)
-    return []
+    return [d for d, _ in _units(path, source)]
 
 
 def calls(path: str, source: str) -> list[tuple[str, int]]:
     if path.endswith(".py"):
         return _python_calls(source)
-    if path.endswith(_JS_EXT):
-        return _js_calls(path, source)
-    return []
+    return _tree_calls(path, source)
 
 
 def enclosing(defs: list[Definition], line: int) -> str:

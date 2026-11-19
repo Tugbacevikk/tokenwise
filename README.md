@@ -179,7 +179,7 @@ Barındırılan sürümde her AI düzeltmesinin varsayılan sınırı $0,50'dir 
 | --- | --- |
 | İsteğin ifadesi | "yazım hatası", "yeniden adlandır" bir basamak aşağı; "refactor", "performans", "eşzamanlılık" bir basamak yukarı |
 | Değişecek kodun boyutu | Modelin göreceği kod 600 satırı ya da 4 dosyayı aşarsa yukarı |
-| Hedef kodun karmaşıklığı | Değişecek fonksiyonun karmaşıklığı 15 ve üstündeyse yukarı (Python, JS/TS) |
+| Hedef kodun karmaşıklığı | Değişecek fonksiyonun karmaşıklığı 15 ve üstündeyse yukarı (Python, JS/TS, Go, Java) |
 | Koda bağlı dosyalar | Değişecek dosyayı 5 ya da daha fazla dosya içe aktarıyorsa yukarı: hata yayılır |
 | Bu projenin geçmişi | Son 30 günde aynı basamaktan başlayan isteklerin en az yarısı daha güçlü modele geçmek zorunda kaldıysa (en az 5 istek), baştan bir basamak yukarıdan başlar ve boşa giden denemeler atlanır |
 
@@ -381,6 +381,9 @@ tokenwise/
 ├── graph.py      # ortak çekirdek: import grafiği, etkilenen dosyalar, döngüler, test eşleşmesi
 ├── history.py    # ortak çekirdek: git geçmişi, değişim sıklığı, hata düzeltmeleri, birlikte değişim
 ├── analyzers.py  # RepoDoctor: deterministik analizler, kalıcı parmak izli bulgular
+├── syntax.py     # Tree-sitter: JS/TS, Go, Java için fonksiyon, dallanma ve çağrı tanımları
+├── js_security.py # RepoDoctor: JS/TS güvenlik kuralları (eval, child_process, innerHTML)
+├── lang_graph.py # ortak çekirdek: Go ve Java içe aktarma grafiği
 ├── health.py     # RepoDoctor: bulgu veritabanı (.tokenwise/health.db), skor, haftalık rapor
 ├── release.py    # ReleaseGuard: PR risk skoru, kanıtlar, kontrol listesi
 ├── web.py        # tokenwise serve: yerel web arayüzünün sunucusu
@@ -446,7 +449,25 @@ tokenwise scan --tools ruff,bandit,coverage   # dış araçların bulgularını 
   ([docs/measurements.md](docs/measurements.md)).
 - **Fonksiyon düzeyinde etki:** Risk raporu hangi fonksiyonların değiştiğini, onları hangi
   fonksiyonların ve hangi testlerin çağırdığını gösterir. Python dosyaları `ast` ile okunur.
-  JS/TS dosyaları için `pip install "tokenwise-coder[impact]"` ile Tree-sitter kurulmalıdır.
+  JavaScript, TypeScript, Go ve Java için `pip install "tokenwise-coder[impact]"` ile
+  Tree-sitter kurulmalıdır. Kurulu değilse bu diller sessizce atlanır, hiçbir şey bozulmaz.
+
+Dil desteği (Tree-sitter kuruluyken):
+
+| | Python | JS/TS | Go | Java |
+|---|---|---|---|---|
+| Karmaşıklık ve uzunluk bulguları | ✓ | ✓ | ✓ | ✓ |
+| Güvenlik kuralları (kod çalıştırma, kabuk komutu) | ✓ | ✓ | – | – |
+| HTML'e hesaplanan değer yazma (XSS) | – | ✓ | – | – |
+| İçe aktarma grafiği (test yok, etki alanı) | ✓ | ✓ | ✓ | ✓ |
+| İçe aktarma döngüsü bulgusu | ✓ | ✓ | – | – |
+| Değişen fonksiyonun çağıranları | ✓ | ✓ | ✓ | ✓ |
+
+Go ve Java'da aynı paketteki dosyalar birbirini içe aktarmadan kullanır; bu yüzden grafik
+paketin üst düzey adlarına (fonksiyon, tür, sınıf) bakar. Bu dillerde döngü bulgusu yoktur:
+Go döngüye zaten izin vermez, Java'da sınıfların birbirini kullanması olağandır.
+JS/TS içe aktarmaları sözdizimi ağacından okunur: yorum ya da metin içindeki `import`
+sayılmaz, fonksiyon içindeki `require()` döngü oluşturmaz.
 - **Konteynerde kontrol:** `tokenwise.toml` dosyasına `sandbox = "docker"` yazılırsa test
   komutu ağı kapalı, sistemi salt okunur ve CPU/bellek sınırlı bir konteynerde çalışır.
   Docker yoksa kontrol "başarısız" değil "atlandı" sayılır.
@@ -526,6 +547,7 @@ Hata ve öneriler için [Issues](https://github.com/Tugbacevikk/tokenwise/issues
 - [x] Faz 3: barındırılan sürüm (GitHub App, PostgreSQL, kuyruk, panel)
 - [x] Faz 1 ölçümü: 10 gerçek depo ([docs/measurements.md](docs/measurements.md))
 - [x] Faz 4: beta hazırlığı (gürültü azaltma, services katmanı, `tokenwise server doctor`)
+- [x] Python dışı diller: JS/TS içe aktarma ve güvenlik kuralları, Go ve Java analizi
 - [ ] Canlı GitHub App denemesi ve ilk beta kullanıcıları
 
 ## Lisans

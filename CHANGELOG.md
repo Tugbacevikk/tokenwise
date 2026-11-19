@@ -7,6 +7,16 @@ a change that breaks existing use bumps major.
 
 First release.
 
+- Beyond Python: Go and Java now get complexity and length findings, an import graph
+  (missing tests, a change's reach, the callers of a changed function) and the smart
+  router's complexity signal. Same-package files are linked by the top-level names they
+  use, since neither language imports them. JS/TS imports are read from the syntax tree:
+  an `import` in a comment or a string is no longer counted, and a `require()` inside a
+  function no longer makes an import cycle. New JS/TS security rules: `eval`,
+  `new Function`, string `setTimeout` (dynamic-code), `child_process.exec` and
+  `spawn({shell: true})` (shell-command), and `innerHTML`, `document.write`,
+  `dangerouslySetInnerHTML` (unsafe-html). The grammars ship in the `impact` extra.
+
 - Smart router (`router = "smart"`, default): the starting model now also depends on the
   complexity of the target functions (Python, JS/TS), how many files import the target,
   and this project's last 30 days: when most requests starting at a level had to climb
