@@ -131,7 +131,9 @@ def test_savings_and_markdown(fake):
     assert b["passed"] == t["passed"] == 1
     assert t["output"] < b["output"]
     md = markdown(outcomes)
-    assert "| typo | baseline |" in md and "| Checks passed | 1/1 | 1/1 | |" in md
+    assert (
+        "| typo | baseline |" in md and "| Solved (check passed) | 1/1 (100%) | 1/1 (100%) |" in md
+    )
 
 
 def test_benchmark_command(tmp_path, monkeypatch, fake):
@@ -223,7 +225,7 @@ def test_benchmark_continues_after_a_too_long_prompt(tmp_path, monkeypatch, fake
     assert "big · tokenwise: context too long" in result.output.replace("\n", " ")
     assert "small · tokenwise: ok" in result.output
     md = (tmp_path / "results.md").read_text()  # default: next to the tasks file
-    assert "| Checks passed |" not in md and "big · tokenwise: context too long" in md
+    assert "| Solved (check passed) |" in md and "big · tokenwise: context too long" in md
     shutil_dir = BENCH / "projects" / ".tokenwise"
     assert not shutil_dir.exists()
 
@@ -258,3 +260,75 @@ def test_skipped_check_is_not_a_failure(tmp_path, monkeypatch, fake):
     assert result.exit_code == 0, result.output
     assert "check skipped: SKIP: not installed: javac" in result.output.replace("\n", " ")
     assert "checks passed │       0/0" in result.output or "0/0" in result.output
+
+
+# fixes the typo (the task's check passes) but also breaks Cart.total (the suite fails)
+TYPO_AND_BREAK = (
+    TYPO_EDIT
+    + """cart.py
+<<<<<<< SEARCH
+        return sum(self.catalog.get(sku).price * qty for sku, qty in self.items.items())
+=======
+        return 0
+>>>>>>> REPLACE
+"""
+)
+
+
+def test_a_change_that_passes_its_check_but_breaks_the_suite_is_a_regression(fake):
+    task = load_tasks(BENCH / "tasks.toml")[0]
+    assert task.suite  # set once at the top of tasks.toml, for every task
+    good = run_task(task, "tokenwise", Settings(root=BENCH), fake('["cart.py"]', TYPO_EDIT),
+                    BENCH / "checks")  # fmt: skip
+    assert good.passed and good.suite_before is True and good.suite_after is True
+    assert not good.regression
+    bad = run_task(task, "tokenwise", Settings(root=BENCH),
+                   fake('["cart.py"]', TYPO_AND_BREAK), BENCH / "checks")  # fmt: skip
+    assert bad.passed is True and bad.regression  # the check alone would have called it a win
+    assert "suite (regression)" in bad.check_output
+    t = totals([good, bad], "tokenwise")
+    assert t["regressions"] == 1 and t["suite_runs"] == 2 and t["calls"] == 4
+    md = markdown([good, bad])
+    assert "⚠️ broke" in md and "| Regressions (suite broke) | 1/2 |" in md
+
+
+def test_repeats_show_the_spread_and_runs_compare(fake, tmp_path):
+    from tokenwise.benchmark import compare, to_json
+
+    task = load_tasks(BENCH / "tasks.toml")[0]
+    settings = Settings(root=BENCH)
+    wrong = TYPO_EDIT.replace('"Quantity must be positive"', '"bad"')
+    runs = [run_task(task, "tokenwise", settings, fake('["cart.py"]', edit), BENCH / "checks",
+                     run_number=n) for n, edit in ((1, TYPO_EDIT), (2, wrong))]  # fmt: skip
+    t = totals(runs, "tokenwise")
+    assert t["solve_rate"] == 0.5 and (t["solve_rate_min"], t["solve_rate_max"]) == (0.0, 1.0)
+    assert t["cost_per_solved"] == pytest.approx(t["cost"])
+    md = markdown(runs)
+    assert "| Run |" in md and "runs 0%–100%" in md
+    old = to_json(runs[:1])
+    new = to_json(runs)
+    assert json.loads(json.dumps(new))["runs"][1]["passed"] is False  # plain JSON
+    table = compare(old, new)
+    assert "| Solve rate | 100% | 50% | worse |" in table
+    assert "between 0% and 100% over 2 identical runs" in table
+
+
+def test_benchmark_command_repeats_and_compares(tmp_path, monkeypatch, fake):
+    replies = ['["cart.py"]', TYPO_EDIT] * 4
+    monkeypatch.setattr(cli, "make_llm", lambda s: fake(*replies))
+    tasks = tmp_path / "tasks.toml"
+    project = (BENCH / "projects/shop").as_posix()
+    check = (
+        "{python} -m pytest -q -p no:cacheprovider " + (BENCH / "checks/test_typo.py").as_posix()
+    )
+    tasks.write_text(f'[[task]]\nname = "typo"\nproject = "{project}"\nrequest = "fix the typo"\n'
+                     f'check = "{check}"\n')  # fmt: skip
+    first = tmp_path / "first.json"
+    args = ["benchmark", str(tasks), "--methods", "tokenwise", "--repeat", "2"]
+    result = CliRunner().invoke(cli.app, [*args, "--json-out", str(first)])
+    assert result.exit_code == 0, result.output
+    assert "typo · tokenwise · run 2: ok" in result.output
+    assert len(json.loads(first.read_text())["runs"]) == 2
+    again = CliRunner().invoke(cli.app, [*args, "--compare", str(first)])
+    assert again.exit_code == 0, again.output
+    assert "## Compared with first.json" in (tmp_path / "results.md").read_text()

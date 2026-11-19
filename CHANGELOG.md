@@ -12,6 +12,11 @@ First release.
   list (cached a day) so costs, the weekly budget and `max_usd_per_request` work for every
   model. Hosted organizations can choose it in the model settings.
 
+- Benchmark measures more than the task's check: regressions (`suite`: the project's own
+  tests passing before and failing after), cost per solved task, median time, model calls
+  and escalations. `--repeat N` shows how much the solve rate moves between identical
+  runs; `--json-out` / `--compare` show what changed between two versions.
+
 - `max_usd_per_request`: a ceiling for one request, escalation included. Each call's
   output is capped to what the rest pays for (pessimistic input estimate); a call that does
   not fit is not made and the best proposal so far is kept. Hosted AI fixes default to

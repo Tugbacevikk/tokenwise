@@ -6,6 +6,11 @@
 #          {python} = the Python running tokenwise, {checks} = the benchmark/checks folder.
 #
 # Replace these examples with ~20 real tasks from your own projects for meaningful numbers.
+#
+# suite    the project's own tests, run before and after the change: passing before and failing
+#          after counts as a regression even when the task's check passed. Set it per task, or
+#          once here for every task.
+suite = "{python} -m pytest -q -p no:cacheprovider {checks}/suite_shop.py"
 
 [[task]]
 name = "typo"
