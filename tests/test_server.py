@@ -1119,3 +1119,20 @@ def test_privacy_export_forget_and_retention(setup, conn):
     assert conn.execute("SELECT 1 FROM users WHERE id = %s", (ALICE["id"],)).fetchone() is None
     assert alice.get("/api/me").status_code == 401
     assert conn.execute("SELECT COUNT(*) AS n FROM findings").fetchone()["n"] > 0
+
+
+def test_owner_can_choose_openrouter(setup, conn):
+    app, worker, model = setup
+    install(TestClient(app))
+    drain(worker)
+    alice = login(app, ALICE)
+    org_id = alice.get("/api/me").json()["orgs"][0]["id"]
+    ok = alice.put(f"/api/orgs/{org_id}/model",
+                   json={"provider": "openrouter", "models": [], "api_key": "sk-or-1",
+                         "base_url": "https://evil.example/v1"})  # fmt: skip
+    assert ok.status_code == 200
+    row = conn.execute("SELECT model_provider, model_base_url FROM organizations WHERE id = %s",
+                       (org_id,)).fetchone()  # fmt: skip
+    assert row == {"model_provider": "openrouter", "model_base_url": ""}  # address is fixed
+    bad = alice.put(f"/api/orgs/{org_id}/model", json={"provider": "elsewhere"})
+    assert bad.status_code == 400

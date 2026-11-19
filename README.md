@@ -77,6 +77,26 @@ tokenwise ask "..." --dry-run
 
 tokenwise Ollama'nın kendi API'sini kullanır ve her istek için bağlam penceresini (`num_ctx`) istemin boyuna göre ayarlar. Ollama'nın OpenAI uyumlu adresi varsayılan pencereyi (birkaç bin token) kullanır ve uzun istemleri **sessizce keser**; büyük bir projenin haritası o zaman modele yarım gider. Pencerenin üst sınırı `max_context` ayarıdır (varsayılan 32768). Daha büyüğü daha çok ekran kartı belleği ister.
 
+### OpenRouter ile kullanım (tek anahtar, birçok şirketin modeli)
+
+[OpenRouter](https://openrouter.ai) DeepSeek, Qwen, Mistral, Llama, Claude ve başka birçok şirketin modelini tek bir API anahtarıyla sunar. Anahtarı [openrouter.ai/keys](https://openrouter.ai/keys) sayfasından al:
+
+```powershell
+cd <projen>
+tokenwise init --openrouter    # anahtarı sorar, .env'ye OPENROUTER_API_KEY olarak yazar
+tokenwise doctor               # anahtar geçerli mi, ayardaki modeller OpenRouter'da var mı?
+tokenwise ask "..." --dry-run
+```
+
+- **Başlangıç merdiveni (ucuzdan pahalıya):**
+  - `~deepseek/deepseek-flash-latest` (seçici ve kolay işler)
+  - `~deepseek/deepseek-pro-latest`
+  - `anthropic/claude-sonnet-5.5`
+
+  Adı `~` ile başlayan modeller, DeepSeek'in her zaman en yeni sürümünü gösterir. Başka bir model kullanmak için `models` satırına [openrouter.ai/models](https://openrouter.ai/models) sayfasındaki adını yaz.
+- **Fiyatlar:** OpenRouter'ın model listesinden günde bir kez okunur. Böylece maliyet kaydı, haftalık bütçe ve `max_usd_per_request` her model için doğru çalışır. `prices` ayarına yazdığın fiyat önceliklidir. Fiyatlar okunamazsa `tokenwise doctor` bunu söyler.
+- **Barındırılan sürüm:** Organization sahibi panelde *Model ayarları → Sağlayıcı → OpenRouter* seçip kendi anahtarını girer.
+
 LM Studio, vLLM ya da OpenAI'nin kendisi gibi OpenAI uyumlu sunucular için `provider = "openai"` ve `base_url = "http://localhost:1234/v1"` gibi bir adres yaz. Anahtar gerekiyorsa `OPENAI_API_KEY` ortam değişkenini kullan.
 
 ### Ayarlar

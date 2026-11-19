@@ -9,6 +9,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from . import openrouter
+
 CONFIG_FILE = "tokenwise.toml"
 STATE_DIR = ".tokenwise"
 
@@ -37,11 +39,13 @@ DEFAULT_IGNORE_DIRS = (
 )
 ANTHROPIC_MODELS = ("claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5")
 LOCAL_MODELS = ("qwen2.5-coder:7b",)
+OPENROUTER_MODELS = openrouter.MODELS
 OLLAMA_URL = "http://localhost:11434"
 
 CONFIG_TEMPLATE = """[tokenwise]
-# "anthropic" (Claude API), "ollama" (local models) or "openai" (any OpenAI-compatible
-# server such as LM Studio or vLLM; set base_url, e.g. "http://localhost:1234/v1")
+# "anthropic" (Claude API), "ollama" (local models), "openrouter" (one key for DeepSeek, Qwen,
+# Mistral, Llama, Claude and more; model names as on openrouter.ai/models) or "openai" (any
+# OpenAI-compatible server such as LM Studio or vLLM; set base_url, e.g. "http://localhost:1234/v1")
 provider = "{provider}"
 {base_url_line}
 # Model ladder, cheapest first. The selector always uses the first one; the editor starts
@@ -84,7 +88,11 @@ def config_template(provider: str) -> str:
     return CONFIG_TEMPLATE.format(
         provider=provider,
         base_url_line=f'base_url = "{OLLAMA_URL}"' if local else f'# base_url = "{OLLAMA_URL}"',
-        models=_toml_list(LOCAL_MODELS if local else ANTHROPIC_MODELS),
+        models=_toml_list(
+            {"ollama": LOCAL_MODELS, "openrouter": OPENROUTER_MODELS}.get(
+                provider, ANTHROPIC_MODELS
+            )
+        ),  # fmt: skip
         map_max_tokens=8000 if local else 16000,
     )
 

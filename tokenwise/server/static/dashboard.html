@@ -329,7 +329,7 @@ async function renderSettings() {
   $("main").innerHTML = `<h2>Model ayarları · ${esc(o.account_login)}</h2>
     <div class="card"><p class="muted">Tarama ve risk raporu model çağırmaz. "AI ile düzelt" bu organization'ın kendi
       anahtarıyla çalışır; anahtar şifreli saklanır ve bir daha gösterilmez.</p>
-      <label>Sağlayıcı</label><select id="provider"><option value="anthropic">Anthropic (Claude)</option><option value="openai">OpenAI uyumlu (sunucunun izin verdiği adres)</option></select>
+      <label>Sağlayıcı</label><select id="provider"><option value="anthropic">Anthropic (Claude)</option><option value="openrouter">OpenRouter (tek anahtarla DeepSeek, Qwen, Llama, Mistral, Claude…)</option><option value="openai">OpenAI uyumlu (sunucunun izin verdiği adres)</option></select>
       <label>Adres (yalnızca OpenAI uyumlu)</label><input id="base" value="">
       <label>Modeller, ucuzdan pahalıya, virgülle</label><input id="models" value="${esc((o.models || []).join(", "))}" placeholder="claude-haiku-5-5, claude-sonnet-5-5">
       <label>API anahtarı ${o.has_model_key ? "(kayıtlı; değiştirmek için yazın)" : ""}</label><input id="key" type="password" autocomplete="off">
@@ -340,6 +340,9 @@ async function renderSettings() {
       kaldırmanız yeterli: kaldırıldığı anda organization ve altındaki her kayıt silinir.</p>
       <a href="/api/orgs/${o.id}/export"><button>Verileri indir (JSON)</button></a></div>`;
   $("provider").value = o.model_provider || "anthropic";
+  const hints = { anthropic: "claude-haiku-5-5, claude-sonnet-5-5", openrouter: "~deepseek/deepseek-flash-latest, ~deepseek/deepseek-pro-latest, anthropic/claude-sonnet-5.5 (boş bırakılırsa bunlar)", openai: "sunucudaki model adları" };
+  const hint = () => { $("models").placeholder = hints[$("provider").value]; $("base").disabled = $("provider").value !== "openai"; };
+  $("provider").onchange = hint; hint();
   $("save").onclick = async () => {
     try {
       await api(`/api/orgs/${o.id}/model`, { method: "PUT", body: JSON.stringify({ provider: $("provider").value, base_url: $("base").value,

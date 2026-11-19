@@ -16,7 +16,7 @@ from pathlib import Path
 
 from cryptography.fernet import Fernet, InvalidToken
 
-from ..config import ANTHROPIC_MODELS, CONFIG_FILE, Settings
+from ..config import ANTHROPIC_MODELS, CONFIG_FILE, OPENROUTER_MODELS, Settings
 
 # Keys a repository may set in its tokenwise.toml when the server runs it.
 REPO_KEYS = ("check", "extensions", "ignore_dirs", "focus_lines", "max_files", "check_timeout")
@@ -118,18 +118,22 @@ def repo_settings(root: Path, server: ServerConfig, org: dict | None = None) -> 
     org = org or {}
     settings.provider = org.get("model_provider") or "anthropic"
     settings.base_url = org.get("model_base_url") or ""
-    settings.models = tuple(org.get("models") or ()) or ANTHROPIC_MODELS
+    default = OPENROUTER_MODELS if settings.provider == "openrouter" else ANTHROPIC_MODELS
+    settings.models = tuple(org.get("models") or ()) or default
     return settings
 
 
 def make_model(settings: Settings, api_key: str, server: ServerConfig):
     """The organization's own model, with its own key; never the server's environment."""
-    from ..llm import AnthropicLLM, ConfigError, OpenAICompatibleLLM
+    from ..llm import AnthropicLLM, ConfigError, OpenAICompatibleLLM, openrouter_backend
 
     if not api_key:
         raise ConfigError("Bu organization için model anahtarı girilmemiş.")
     if settings.provider == "anthropic":
         return AnthropicLLM(api_key=api_key)
+    if settings.provider == "openrouter":  # its fixed public address: no allow-list needed
+        settings.base_url = ""
+        return openrouter_backend(settings, api_key, None)
     if settings.provider == "openai" and settings.base_url in server.allowed_model_urls:
         return OpenAICompatibleLLM(settings.base_url, api_key)
     raise ConfigError("Bu model sağlayıcısına ya da adresine bu sunucuda izin verilmiyor.")

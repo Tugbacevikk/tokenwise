@@ -7,6 +7,11 @@ a change that breaks existing use bumps major.
 
 First release.
 
+- OpenRouter provider (`tokenwise init --openrouter`, `provider = "openrouter"`): one key
+  for DeepSeek, Qwen, Mistral, Llama, Claude and more. Prices come from OpenRouter's model
+  list (cached a day) so costs, the weekly budget and `max_usd_per_request` work for every
+  model. Hosted organizations can choose it in the model settings.
+
 - `max_usd_per_request`: a ceiling for one request, escalation included. Each call's
   output is capped to what the rest pays for (pessimistic input estimate); a call that does
   not fit is not made and the best proposal so far is kept. Hosted AI fixes default to

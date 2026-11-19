@@ -70,24 +70,22 @@ def init(
     local: bool = typer.Option(
         False, "--local", help="Use a local model server (Ollama) instead of the Claude API."
     ),
+    use_openrouter: bool = typer.Option(
+        False, "--openrouter", help="Use OpenRouter: one key for DeepSeek, Qwen, Llama, Claude..."
+    ),
 ) -> None:
     """Create tokenwise.toml and .env, and keep secrets out of git."""
     root = root.resolve()
     root.mkdir(parents=True, exist_ok=True)
+    provider = "ollama" if local else "openrouter" if use_openrouter else "anthropic"
     config = root / CONFIG_FILE
     if not config.exists():
-        config.write_text(config_template("ollama" if local else "anthropic"), "utf-8")
-        console.print(f"Created {CONFIG_FILE}" + (" for a local model" if local else ""))
-
-    if not local:
-        env = root / ".env"
-        has_key = env.exists() and "ANTHROPIC_API_KEY=" in env.read_text("utf-8").replace(" ", "")
-        if not has_key and not os.getenv("ANTHROPIC_API_KEY"):
-            key = typer.prompt("Anthropic API key", hide_input=True, default="", show_default=False)
-            if key:
-                with env.open("a", encoding="utf-8") as f:
-                    f.write(f"ANTHROPIC_API_KEY={key.strip()}\n")
-                console.print("Saved the key to .env")
+        config.write_text(config_template(provider), "utf-8")
+        console.print(f"Created {CONFIG_FILE}" + {"ollama": " for a local model",
+                      "openrouter": " for OpenRouter"}.get(provider, ""))  # fmt: skip
+    if provider != "ollama":
+        _ask_key(root, *{"openrouter": ("OPENROUTER_API_KEY", "OpenRouter API key")}.get(
+            provider, ("ANTHROPIC_API_KEY", "Anthropic API key")))  # fmt: skip
 
     gitignore = root / ".gitignore"
     existing = gitignore.read_text("utf-8").splitlines() if gitignore.exists() else []
@@ -101,6 +99,17 @@ def init(
     if local:
         console.print("Start Ollama and pull a model, e.g.: ollama pull qwen2.5-coder:7b")
     console.print("[green]Ready.[/] Try: tokenwise map")
+
+
+def _ask_key(root: Path, name: str, label: str) -> None:
+    env = root / ".env"
+    has_key = env.exists() and f"{name}=" in env.read_text("utf-8").replace(" ", "")
+    if not has_key and not os.getenv(name):
+        key = typer.prompt(label, hide_input=True, default="", show_default=False)
+        if key:
+            with env.open("a", encoding="utf-8") as f:
+                f.write(f"{name}={key.strip()}\n")
+            console.print("Saved the key to .env")
 
 
 @app.command("map")
@@ -506,7 +515,11 @@ def doctor(root: Path = RootOption) -> None:
         available = backend.list_models()
     except LLMError as exc:
         _fail(str(exc))
-    console.print(f"Server:   reachable, {len(available)} model(s): {', '.join(available) or '-'}")
+    shown = ", ".join(available) if len(available) <= 20 else f"{len(available)} listed"
+    console.print(f"Server:   reachable, {len(available)} model(s): {shown or '-'}")
+    if getattr(backend, "priced", True) is False:
+        console.print("[yellow]Prices could not be read from OpenRouter:[/] costs will show 0 "
+                      "and max_usd_per_request cannot hold until they can.")  # fmt: skip
     missing = [m for m in settings.models if m not in available and f"{m}:latest" not in available]
     for model in settings.models:
         mark = "[red]missing[/]" if model in missing else "[green]ok[/]"
@@ -517,7 +530,9 @@ def doctor(root: Path = RootOption) -> None:
         except LLMError as exc:
             console.print(f"[yellow]The selector prompt for this project is too big:[/] {exc}")
     if missing:
-        hint = "ollama pull " + missing[0] if settings.provider == "ollama" else "fix `models`"
+        hint = {"ollama": "ollama pull " + missing[0],
+                "openrouter": "names as on https://openrouter.ai/models"}.get(
+            settings.provider, "fix `models`")  # fmt: skip
         _fail(f"{len(missing)} model(s) missing. Download them ({hint}) or change `models`.")
     console.print("[green]All good.[/]")
 
