@@ -381,8 +381,8 @@ def create_app(
     def set_model(org_id: int, body: ModelBody, user=Depends(current_user),
                   conn=Depends(get_conn)) -> dict:  # fmt: skip
         need_org(conn, user, org_id, owner=True)
-        if body.provider not in ("anthropic", "openai"):
-            raise HTTPException(400, "Sağlayıcı anthropic ya da openai olmalı.")
+        if body.provider not in ("anthropic", "openrouter", "openai"):
+            raise HTTPException(400, "Sağlayıcı anthropic, openrouter ya da openai olmalı.")
         if body.provider == "openai" and body.base_url not in server.allowed_model_urls:
             raise HTTPException(400, "Bu adrese bu sunucuda izin verilmiyor.")
         models = [m.strip() for m in body.models if m.strip()][:5]

@@ -117,12 +117,14 @@ def _post(client, url: str, body: dict, model: str, server: str):
 class OpenAICompatibleLLM:
     """Talks to any server with the OpenAI chat API: LM Studio, vLLM, OpenAI itself."""
 
-    def __init__(self, base_url: str, api_key: str | None = None, timeout: float = 600) -> None:
+    def __init__(self, base_url: str, api_key: str | None = None, timeout: float = 600,
+                 headers: dict | None = None, transport=None) -> None:  # fmt: skip
         import httpx
 
         self.base_url = base_url.rstrip("/")
-        headers = {"Authorization": f"Bearer {api_key or 'none'}"}
-        self.client = httpx.Client(base_url=self.base_url, headers=headers, timeout=timeout)
+        headers = {"Authorization": f"Bearer {api_key or 'none'}", **(headers or {})}
+        self.client = httpx.Client(base_url=self.base_url, headers=headers, timeout=timeout,
+                                   transport=transport)  # fmt: skip
 
     def list_models(self) -> list[str]:
         return [m["id"] for m in _get(self.client, "/models", self.base_url).get("data", [])]
@@ -277,9 +279,29 @@ def make_backend(settings: Settings) -> LLM:
         if not settings.base_url:
             raise ConfigError('provider = "openai" needs `base_url` in tokenwise.toml.')
         return OpenAICompatibleLLM(settings.base_url, os.getenv("OPENAI_API_KEY"))
+    if settings.provider == "openrouter":
+        if not os.getenv("OPENROUTER_API_KEY"):
+            raise ConfigError("OPENROUTER_API_KEY is not set. Run `tokenwise init --openrouter`.")
+        return openrouter_backend(settings, os.environ["OPENROUTER_API_KEY"],
+                                  settings.state_dir / "openrouter-prices.json")  # fmt: skip
     raise ConfigError(
-        f'unknown provider {settings.provider!r}; use "anthropic", "ollama" or "openai".'
+        f"unknown provider {settings.provider!r}; "
+        'use "anthropic", "ollama", "openai" or "openrouter".'
     )
+
+
+def openrouter_backend(settings: Settings, api_key: str, price_cache: Path | None,
+                       transport=None):  # fmt: skip
+    """OpenRouter's client; its live prices fill in what `prices` in tokenwise.toml does not
+    set, so costs and budgets work for every model there. `transport`: for tests."""
+    from . import openrouter
+
+    backend = OpenAICompatibleLLM(settings.base_url or openrouter.BASE_URL, api_key,
+                                  headers=openrouter.HEADERS, transport=transport)  # fmt: skip
+    live = openrouter.load_prices(backend.client, price_cache)
+    settings.prices = {**live, **settings.prices}
+    backend.priced = bool(live)
+    return backend
 
 
 def cache_path(settings: Settings) -> Path:
