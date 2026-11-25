@@ -88,6 +88,7 @@ include = ["tokenwise", "tests", "README.md", "LICENSE", "CHANGELOG.md"]
 
 [tool.mypy]
 python_version = "3.11"
+platform = "linux"  # the same answer on every OS; Docker-only code uses POSIX calls
 files = ["tokenwise"]
 ignore_missing_imports = true  # tree-sitter grammars and a few others ship no types
 warn_unused_ignores = true
