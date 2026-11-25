@@ -34,6 +34,12 @@ _EDIT_BLOCK = re.compile(
 )
 _PATH_PREFIX = re.compile(r"^(?:#+\s*|(?:file|path|filename)\s*:\s*)", re.I)
 _NEED_FILES = re.compile(r"^NEED_FILES:\s*(.+)$", re.M)
+# A whole file instead of edit blocks: a path line, then the file, fenced or not.
+_WHOLE_FILE = re.compile(
+    r"\A\s*(?P<path>[^\n]+)\n+(?:```[^\n]*\n(?P<fenced>.*?)\n```\s*\Z|(?P<bare>.+)\Z)", re.S
+)
+# "# ... rest unchanged": a shortened file, which must not replace the real one.
+_ELIDED = re.compile(r"^\s*(?:#|//|/\*)?\s*(?:\.\.\.|…|⋯)", re.M)
 
 
 class EditError(Exception):
@@ -45,6 +51,7 @@ class Edit:
     path: str
     search: str
     replace: str
+    whole: bool = False  # `replace` is the file's complete new content
 
 
 @dataclass
@@ -110,6 +117,30 @@ def parse_edits(text: str, default_path: str | None = None) -> list[Edit]:
             continue
         edits.append(Edit(path, match.group("search"), match.group("replace")))
     return edits
+
+
+def parse_whole_file(text: str, sent: list[str], root: Path, all_files: list[str]) -> Edit | None:
+    """A reply that is a whole file instead of edit blocks, which small local models often
+    write despite the instructions. Accepted only for a file the model saw in full or a new
+    file, and only when nothing looks cut out; the check still decides if it is right."""
+    if "<<<<<<<" in text or "NEED_FILES:" in text:
+        return None
+    match = _WHOLE_FILE.match(text.replace("\r\n", "\n"))
+    path = clean_path(match.group("path")) if match else None
+    if path is None:
+        return None
+    path = resolve_path(resolve_path(path, sent), all_files)
+    content = match.group("fenced") if match.group("fenced") is not None else match.group("bare")
+    content = content.rstrip("\n") + "\n"
+    if "```" in content or _ELIDED.search(content):
+        return None
+    if path not in sent and path in all_files:
+        return None  # not shown to it: it is guessing the file
+    target = root / path
+    old = read_source(target, strict=False) if path in sent and target.is_file() else ""
+    if old and len(content.splitlines()) < len(old.splitlines()) // 2:
+        return None  # most of the file is gone: likely a shortened copy
+    return Edit(path, old, content, whole=True)
 
 
 def parse_need_files(text: str) -> list[str]:
@@ -211,6 +242,9 @@ def plan_changes(root: Path, edits: list[Edit]) -> list[Change]:
             working[edit.path] = originals[edit.path] or ""
         text = working[edit.path]
 
+        if edit.whole:
+            working[edit.path] = edit.replace
+            continue
         if not edit.search.strip():
             if text.strip():
                 raise EditError(f"{edit.path}: file is not empty, SEARCH must not be empty")
@@ -308,7 +342,7 @@ def propose(
             reply.role = "editor"
             replies.append(reply)
 
-            asked = parse_need_files(reply.text)
+            asked = [resolve_path(p, all_files) for p in parse_need_files(reply.text)]
             needed = [p for p in asked if p in all_files and p not in paths]
             unfocus = [p for p in asked if p in focus]
             if needed or unfocus:
@@ -323,8 +357,12 @@ def propose(
                 if edit.path not in all_files:
                     edit.path = resolve_path(resolve_path(edit.path, paths), all_files)
             if not edits:
+                whole = parse_whole_file(reply.text, [p for p in paths if p not in focus],
+                                         settings.root, all_files)  # fmt: skip
+                edits = [whole] if whole else []
+            if not edits:
                 last_problem = "the reply had no edit blocks"
-                feedback = "Your reply had no valid edit blocks. Reply only with edit blocks."
+                feedback = _no_edits_feedback(asked, paths, all_files)
                 continue
             try:
                 changes = plan_changes(settings.root, edits)
@@ -368,6 +406,23 @@ def propose(
         return last
     detail = f"; last problem: {last_problem}" if last_problem else ""
     return Proposal([], replies, paths, error=f"no applicable edit from {tried}{detail}")
+
+
+def _no_edits_feedback(asked: list[str], paths: list[str], all_files: list[str]) -> str:
+    """What to tell a model whose reply had nothing to apply. A NEED_FILES that adds nothing
+    gets a specific answer, or the model would ask for the same file again."""
+    missing = [p for p in asked if p not in all_files]
+    shown = [p for p in asked if p in paths]
+    parts = []
+    if missing:
+        parts.append(f"{', '.join(missing)} does not exist yet. To create it, write an edit "
+                     "block with that path and an empty SEARCH part.")  # fmt: skip
+    if shown:
+        parts.append(f"{', '.join(shown)} is already shown above in full.")
+    parts.append("Reply only with edit blocks.")
+    if not asked:
+        parts.insert(0, "Your reply had no valid edit blocks.")
+    return " ".join(parts)
 
 
 def _out_of_budget(last: Proposal | None, replies: list[Reply], paths: list[str],

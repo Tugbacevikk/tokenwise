@@ -188,3 +188,68 @@ def test_propose_uses_the_only_file_when_path_is_missing(settings, fake):
     reply = "```\n<<<<<<< SEARCH\n    return True\n=======\n    return False\n>>>>>>> REPLACE\n```"
     proposal = propose("x", ["app/auth.py"], settings, fake(reply), ALL_FILES, models=["m"])
     assert proposal.changes and "return False" in proposal.changes[0].new
+
+
+# ---------------------------------------------------------------- small local models
+
+AUTH_WHOLE = (
+    "def login(user, password):\n"
+    "    if len(password) < 8:\n"
+    "        raise ValueError('password too short')\n"
+    "    return check(user, password)\n"
+    "\n"
+    "\n"
+    "def check(user, password):\n"
+    "    return True\n"
+)
+
+
+@pytest.mark.parametrize("fence", [True, False])
+def test_a_whole_file_reply_is_accepted_for_a_file_it_saw(settings, fake, fence):
+    # qwen2.5-coder:7b often writes the whole file, under a path from the instructions
+    body = f"```python\n{AUTH_WHOLE}```\n" if fence else AUTH_WHOLE
+    llm = fake(f"src/app/auth.py\n\n{body}")
+    proposal = propose("x", ["app/auth.py"], settings, llm, ALL_FILES, models=["m1"])
+    (change,) = proposal.changes
+    assert change.path == "app/auth.py" and change.new == AUTH_WHOLE
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "app/auth.py\n```\ndef login(user, password):\n    # ... rest unchanged\n```\n",
+        "app/util.py\n```\nclass Clock:\n    pass\n```\n",  # never shown to the model
+        "app/auth.py\n```\ndef login():\n    pass\n```\n",  # most of the file is gone
+    ],
+)
+def test_a_whole_file_that_looks_cut_or_guessed_is_refused(settings, fake, reply):
+    llm = fake(reply, reply)
+    proposal = propose("x", ["app/auth.py"], settings, llm, ALL_FILES, models=["m1"])
+    assert proposal.changes == [] and "no edit blocks" in proposal.error
+
+
+def test_a_whole_new_file_reply_creates_it(settings, fake):
+    llm = fake("app/money.py\n```python\ndef fmt(c):\n    return str(c)\n```\n")
+    proposal = propose("x", ["app/auth.py"], settings, llm, ALL_FILES, models=["m1"])
+    (change,) = proposal.changes
+    assert (change.path, change.old) == ("app/money.py", None)
+
+
+def test_need_files_with_a_bare_name_finds_the_file(settings, fake):
+    llm = fake("NEED_FILES: util.py", LENGTH_CHECK)
+    proposal = propose("x", ["app/auth.py"], settings, llm, ALL_FILES, models=["m1"])
+    assert proposal.files_sent == ["app/auth.py", "app/util.py"]
+    assert "return 0" in llm.calls[1]["prompt"] and len(proposal.changes) == 1
+
+
+def test_need_files_for_a_new_file_is_told_to_create_it(settings, fake):
+    llm = fake("NEED_FILES: money.py", LENGTH_CHECK)
+    propose("x", ["app/auth.py"], settings, llm, ALL_FILES, models=["m1"])
+    assert "money.py does not exist yet" in llm.calls[1]["prompt"]
+    assert "empty SEARCH" in llm.calls[1]["prompt"]
+
+
+def test_need_files_for_a_file_already_shown_says_so(settings, fake):
+    llm = fake("NEED_FILES: auth.py", LENGTH_CHECK)
+    propose("x", ["app/auth.py"], settings, llm, ALL_FILES, models=["m1"])
+    assert "app/auth.py is already shown above in full" in llm.calls[1]["prompt"]
