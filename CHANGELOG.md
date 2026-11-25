@@ -7,6 +7,12 @@ a change that breaks existing use bumps major.
 
 First release.
 
+- Model benchmark on GitHub's machines (`.github/workflows/benchmark.yml`, started by hand):
+  the smart and the simple router on the same tasks with OpenRouter models, a spending
+  ceiling per task run, and a summary table. Needs the secret `OPENROUTER_API_KEY`.
+- A model server behind a refusing proxy or firewall is reported as "cannot reach ..."
+  instead of a traceback.
+
 - Small local models: a reply that is the whole file instead of edit blocks is now accepted
   for a file the model saw in full (or a new file), unless it looks shortened; the check
   still decides. `NEED_FILES: cart.py` finds `shop/cart.py`, and asking for a file that does

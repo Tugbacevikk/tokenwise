@@ -97,6 +97,8 @@ def _post(client, url: str, body: dict, model: str, server: str):
         ) from None
     except httpx.TimeoutException:
         raise LLMError(f"{server} did not answer in time (model {model!r})") from None
+    except httpx.TransportError as exc:  # a proxy or firewall refused it, TLS failed, ...
+        raise LLMError(f"cannot reach {server}: {exc}") from None
     if response.status_code >= 400:
         try:
             detail = response.json().get("error") or response.text
