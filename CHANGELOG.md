@@ -7,6 +7,14 @@ a change that breaks existing use bumps major.
 
 First release.
 
+- Hosted worker under load and failure, tested against PostgreSQL (`tests/test_server_load.py`):
+  8 workers with 300 events arriving, a 50-request webhook storm, a worker process killed
+  mid-job, a dropped and a refused database connection. Two fixes came out of it: a job
+  put back in the queue while a new job with the same key had just arrived crashed the
+  worker (unique index); now the new one takes over. And a lost database connection no
+  longer ends the worker: it reconnects with a growing wait and puts its interrupted job
+  back at once instead of after 10 minutes.
+
 - Model benchmark on GitHub's machines (`.github/workflows/benchmark.yml`, started by hand):
   the smart and the simple router on the same tasks with OpenRouter models, a spending
   ceiling per task run, and a summary table. Needs the secret `OPENROUTER_API_KEY`.

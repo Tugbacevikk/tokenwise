@@ -21,6 +21,8 @@ from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
+import psycopg
+
 from ..editor import Change, apply_changes
 from ..graph import build_graph
 from ..health import collect, task_for
@@ -33,6 +35,9 @@ from .github import GitHub, GitHubError, RateLimited, mask
 log = logging.getLogger("tokenwise.worker")
 BOT_NAME = "tokenwise"
 BOT_EMAIL = "tokenwise@users.noreply.github.com"
+
+
+MAX_RECONNECT_WAIT = 60.0  # seconds between attempts while the database is gone
 
 
 class JobError(Exception):
@@ -108,6 +113,7 @@ class Worker:
         self.model_factory = model_factory or (lambda s, key: make_model(s, key, server))
         self.job: dict | None = None  # the job being run, and its heartbeat
         self.beat: Heartbeat | None = None
+        self.claimed: dict | None = None  # claimed, outcome not yet recorded
         self.handlers = {
             "sync": self.sync,
             "scan": self.scan,
@@ -124,6 +130,7 @@ class Worker:
         job = queue.claim(self.conn, self.name)
         if job is None:
             return None
+        self.claimed = job  # cleared once its outcome is recorded; see release_claimed()
         handler = self.handlers.get(job["kind"])
         self.job = job
         try:
@@ -155,6 +162,7 @@ class Worker:
             job["status"] = "done" if done else "lost"
         finally:
             self.job = self.beat = None
+        self.claimed = None
         if job["status"] == "lost":
             log.warning("job %s: result not recorded, another worker holds it", job["id"])
         return job
@@ -168,11 +176,46 @@ class Worker:
         if (beat is not None and beat.lost.is_set()) or not queue.holds(self.conn, job):
             raise LeaseLost(f"job {job['id']}")
 
-    def run_forever(self, idle: float = 2.0) -> None:
-        while True:
-            self.maybe_prune()
-            if self.run_once() is None:
-                time.sleep(idle)
+    def run_forever(self, idle: float = 2.0, stop: threading.Event | None = None) -> None:
+        """Runs jobs until `stop` is set (never, in production). A lost database connection
+        (a restart, a network blip) does not end the worker: it reconnects, waiting longer
+        each time it fails, and puts back the job it was running when the connection dropped."""
+        stop = stop or threading.Event()
+        wait = idle
+        while not stop.is_set():
+            try:
+                if self.conn.closed or self.conn.broken:
+                    self.reconnect()
+                self.maybe_prune()
+                if self.run_once() is None:
+                    stop.wait(idle)
+                wait = idle
+            except (psycopg.OperationalError, psycopg.InterfaceError) as exc:
+                log.warning("database connection lost (%s); retrying in %.1f s", exc, wait)
+                stop.wait(wait)
+                wait = min(wait * 2, MAX_RECONNECT_WAIT)
+
+    def reconnect(self) -> None:
+        """A new connection in place of a broken one, then the interrupted job put back."""
+        try:
+            self.conn.close()
+        except psycopg.Error:
+            pass
+        self.conn = self.connect()
+        log.info("reconnected to the database")
+        self.release_claimed()
+
+    def release_claimed(self) -> str | None:
+        """Puts back a job whose run ended with the connection, so it runs again after the
+        usual retry delay instead of waiting STALE_MINUTES to be noticed."""
+        job, self.claimed = self.claimed, None
+        if job is None:
+            return None
+        status = queue.fail(self.conn, job, "the worker's database connection dropped")
+        log.warning("job %s interrupted by a lost connection: %s", job["id"], status)
+        if status == "failed":
+            self._job_failed(job, "the worker's database connection dropped")
+        return status
 
     def maybe_prune(self, every: float = 3600) -> dict | None:
         """About once an hour, deletes records past their keeping period (db.RETENTION_DAYS).
