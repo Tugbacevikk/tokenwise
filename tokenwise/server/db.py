@@ -11,6 +11,7 @@ import json
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
@@ -220,11 +221,22 @@ CREATE UNLOGGED TABLE IF NOT EXISTS rate_hits (
 """
 
 
-def connect(url: str) -> psycopg.Connection:
+Conn = psycopg.Connection[dict[str, Any]]  # every connection here returns rows as dicts
+
+
+def connect(url: str) -> Conn:
     return psycopg.connect(url, row_factory=dict_row, autocommit=True)
 
 
-def migrate(conn: psycopg.Connection) -> None:
+def value(conn: Conn, sql: str, params: tuple = ()) -> Any:
+    """The first column of the first row of a query that always returns one."""
+    row = conn.execute(sql, params).fetchone()
+    if row is None:
+        raise LookupError(f"no row from: {sql}")
+    return next(iter(row.values()))
+
+
+def migrate(conn: Conn) -> None:
     with conn.transaction():
         conn.execute("SELECT pg_advisory_xact_lock(7262701)")  # one migrator at a time
         conn.execute(SCHEMA)
@@ -236,7 +248,7 @@ def migrate(conn: psycopg.Connection) -> None:
 
 
 @contextmanager
-def tx(conn: psycopg.Connection) -> Iterator[psycopg.Connection]:
+def tx(conn: Conn) -> Iterator[Conn]:
     with conn.transaction():
         yield conn
 

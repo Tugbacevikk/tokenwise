@@ -503,7 +503,7 @@ def create_app(
         repo = need_repo(conn, user, repo_id)
         pr = db.pull_request(conn, repo_id, number)
         suggestions = ((pr or {}).get("report") or {}).get("suggestions") or []
-        if not 0 <= index < len(suggestions):
+        if pr is None or not 0 <= index < len(suggestions):
             raise HTTPException(404, "Bu öneri bulunamadı.")
         if not pr["same_repo"] or not pr["head_ref"]:
             raise HTTPException(400, "Bu PR başka bir depodan (fork) geliyor; Agent onun dalına "
@@ -572,8 +572,11 @@ def handle_event(conn, event: str, payload: dict) -> dict:
 def _on_installation(conn, payload: dict) -> dict:
     action = payload.get("action", "")
     if action == "deleted":
+        installation_id = (payload.get("installation") or {}).get("id")
+        if installation_id is None:
+            return {"ignored": "no installation id"}
         with db.tx(conn):
-            gone = db.delete_org(conn, (payload.get("installation") or {}).get("id"))
+            gone = db.delete_org(conn, installation_id)
         return {"deleted": gone}
     if action in ("created", "new_permissions_accepted", "unsuspend"):
         return _install(conn, payload)

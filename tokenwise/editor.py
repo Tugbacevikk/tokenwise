@@ -8,6 +8,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Protocol
 
 from .budget import RequestBudgetExceeded
 from .config import Settings
@@ -40,6 +41,13 @@ _WHOLE_FILE = re.compile(
 )
 # "# ... rest unchanged": a shortened file, which must not replace the real one.
 _ELIDED = re.compile(r"^\s*(?:#|//|/\*)?\s*(?:\.\.\.|…|⋯)", re.M)
+
+
+class CheckOutcome(Protocol):
+    """What `propose(verify=...)` gets back: checker.CheckResult, or a test's stand-in."""
+
+    passed: bool
+    output: str
 
 
 class EditError(Exception):
@@ -126,7 +134,9 @@ def parse_whole_file(text: str, sent: list[str], root: Path, all_files: list[str
     if "<<<<<<<" in text or "NEED_FILES:" in text:
         return None
     match = _WHOLE_FILE.match(text.replace("\r\n", "\n"))
-    path = clean_path(match.group("path")) if match else None
+    if match is None:
+        return None
+    path = clean_path(match.group("path"))
     if path is None:
         return None
     path = resolve_path(resolve_path(path, sent), all_files)
@@ -308,7 +318,7 @@ def propose(
     llm: LLM,
     all_files: list[str],
     models: list[str] | None = None,
-    verify: Callable[[list[Change]], object] | None = None,
+    verify: Callable[[list[Change]], CheckOutcome] | None = None,
     focus: dict[str, list[str]] | None = None,
 ) -> Proposal:
     """Asks each model in `models` (cheapest first) for edits, climbing to the next on failure.

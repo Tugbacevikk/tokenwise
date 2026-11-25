@@ -84,6 +84,7 @@ class Ledger:
             ),
         )
         run_id = cursor.lastrowid
+        assert run_id is not None  # the INSERT above just made it
         self.db.executemany(
             "INSERT INTO calls VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [

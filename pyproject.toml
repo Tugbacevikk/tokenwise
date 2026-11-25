@@ -39,6 +39,7 @@ server = [
     "pyjwt[crypto]>=2.8",
     "cryptography>=42",
     "ruff>=0.6",
+    "mypy>=1.10",
     "bandit>=1.7",
     "tree-sitter>=0.23",
     "tree-sitter-javascript>=0.23",
@@ -84,6 +85,13 @@ packages = ["tokenwise"]
 
 [tool.hatch.build.targets.sdist]
 include = ["tokenwise", "tests", "README.md", "LICENSE", "CHANGELOG.md"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["tokenwise"]
+ignore_missing_imports = true  # tree-sitter grammars and a few others ship no types
+warn_unused_ignores = true
+warn_redundant_casts = true
 
 [tool.ruff]
 line-length = 100
