@@ -7,6 +7,12 @@ a change that breaks existing use bumps major.
 
 First release.
 
+- Small local models: a reply that is the whole file instead of edit blocks is now accepted
+  for a file the model saw in full (or a new file), unless it looks shortened; the check
+  still decides. `NEED_FILES: cart.py` finds `shop/cart.py`, and asking for a file that does
+  not exist or is already shown gets a specific answer instead of a wasted attempt. Seen in
+  a benchmark with qwen2.5-coder:7b, where these replies made 12 of 15 runs fail.
+
 - Beyond Python: Go and Java now get complexity and length findings, an import graph
   (missing tests, a change's reach, the callers of a changed function) and the smart
   router's complexity signal. Same-package files are linked by the top-level names they
