@@ -1,0 +1,70 @@
+name: benchmark (models)
+
+# Runs benchmark/tasks.toml against real models on GitHub's machines, once with the smart
+# router and once with the simple one, and compares them. Started by hand from the Actions
+# tab (or `gh workflow run benchmark.yml`); never on a push, because it spends money.
+#
+# Needs the repository secret OPENROUTER_API_KEY. The key goes to OpenRouter only; it is
+# never written to a file or a log. Spending is capped per request (max_usd_per_request),
+# so one run can cost at most tasks x repeat x 2 routers x that cap; the summary shows the
+# real cost.
+on:
+  workflow_dispatch:
+    inputs:
+      repeat:
+        description: "Runs per task (the spread between identical runs)"
+        default: "3"
+      models:
+        description: "Model ladder, cheapest first, comma-separated (empty = tokenwise's OpenRouter default)"
+        default: ""
+      max_usd_per_request:
+        description: "Most one task run may cost, escalation included (USD)"
+        default: "0.05"
+      only:
+        description: "Run only tasks whose name contains this (empty = all)"
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: model-benchmark
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      PYTHONUTF8: "1"
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      # inputs reach the scripts as variables, never pasted into them
+      REPEAT: ${{ inputs.repeat }}
+      MODELS: ${{ inputs.models }}
+      MAX_USD: ${{ inputs.max_usd_per_request }}
+      ONLY: ${{ inputs.only }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - run: pip install -e .
+      - name: Check the inputs and the key
+        run: |
+          if [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "::error::Add the repository secret OPENROUTER_API_KEY (Settings > Secrets and variables > Actions)."
+            exit 1
+          fi
+          python benchmark/model_run.py check
+      - name: Smart router
+        run: python benchmark/model_run.py run smart
+      - name: Simple router
+        run: python benchmark/model_run.py run simple
+      - name: Summary
+        if: always()
+        run: python benchmark/model_run.py summary >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: model-benchmark
+          path: .model-benchmark/

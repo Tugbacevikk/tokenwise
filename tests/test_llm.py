@@ -109,6 +109,12 @@ def test_ollama_errors_are_readable():
         _ollama(down, max_context=4096).complete(
             model="m", system="s" * 40_000, prompt="", max_tokens=10
         )
+
+    def blocked(request):
+        raise httpx.ProxyError("403 Forbidden")
+
+    with pytest.raises(LLMError, match="cannot reach .*403 Forbidden"):
+        _ollama(blocked).complete(model="m", system="s", prompt="p", max_tokens=10)
     broken = _ollama(lambda r: httpx.Response(500, text="boom"))
     with pytest.raises(LLMError, match="500"):
         broken.complete(model="m", system="s", prompt="p", max_tokens=10)
