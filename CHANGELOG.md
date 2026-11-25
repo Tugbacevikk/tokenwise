@@ -7,12 +7,6 @@ a change that breaks existing use bumps major.
 
 First release.
 
-- Type checking: `mypy` runs in CI and passes on the whole package. Fixing its findings
-  also made a few edge cases explicit (a suggestion on a PR that is gone answers 404, an
-  uninstall event without an installation id is ignored, custom long-prompt prices in
-  `[tokenwise.prices]` read their sixth value). `cli.py` is split into cli.py (Agent),
-  cli_bench.py, cli_health.py and cli_server.py; commands and options are unchanged.
-
 - Model benchmark on GitHub's machines (`.github/workflows/benchmark.yml`, started by hand):
   the smart and the simple router on the same tasks with OpenRouter models, a spending
   ceiling per task run, and a summary table. Needs the secret `OPENROUTER_API_KEY`.
@@ -251,3 +245,8 @@ First release.
 - `tokenwise benchmark`: baseline vs tokenwise on TOML-defined tasks in throwaway copies,
   judged by each task's check command, with a markdown results table.
 - VS Code extension: ask, diff view, apply/discard/undo, cost panel and status bar.
+- Type checking: `mypy` runs in CI and passes on the whole package. Fixing its findings
+  also made a few edge cases explicit (a suggestion on a PR that is gone answers 404, an
+  uninstall event without an installation id is ignored, custom long-prompt prices in
+  `[tokenwise.prices]` read their sixth value). `cli.py` is split into cli.py (Agent),
+  cli_bench.py, cli_health.py and cli_server.py; commands and options are unchanged.
