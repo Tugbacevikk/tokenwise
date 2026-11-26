@@ -543,7 +543,7 @@ Hata ve öneriler için [Issues](https://github.com/Tugbacevikk/tokenwise/issues
 - [ ] Kendi projelerinden 20 görevle ölçüm ve sonuç tablosu
 - [x] Aşama 5: VS Code eklentisi (fark görünümü, uygula/geri al, maliyet paneli)
 - [x] Aşama 6: yayın altyapısı (PyPI ve Marketplace iş akışları, CHANGELOG, issue şablonları)
-- [ ] İlk yayın: v1.0.0 etiketi
+- [x] İlk yayın: v1.0.0 etiketi
 - [x] Platform: ortak çekirdek, RepoDoctor, ReleaseGuard
 - [x] Faz 1 araçları: risk kalibrasyonu, kural başına yanlış alarm oranı
 - [x] Faz 2: Docker sandbox, Ruff/Bandit/coverage, fonksiyon düzeyinde etki
