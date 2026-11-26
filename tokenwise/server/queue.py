@@ -19,6 +19,7 @@ keeps the newest input, so a late, older webhook cannot replace a newer one."""
 
 from __future__ import annotations
 
+from psycopg.errors import UniqueViolation
 from psycopg.types.json import Jsonb
 
 MAX_ATTEMPTS = 3
@@ -102,29 +103,15 @@ def fail(conn, job: dict, error: str, retry: bool = True) -> str:
     status, or "lost" when this claim no longer holds the job (nothing is changed then)."""
     if not holds(conn, job):
         return "lost"
-    if retry and job.get("dedupe_key"):
-        newer = conn.execute(
-            "SELECT id, payload FROM jobs WHERE dedupe_key = %s AND status = 'queued' AND id <> %s",
-            (job["dedupe_key"], job["id"]),
-        ).fetchone()
-        if newer:  # the same work is queued again: that one will do it, with the newest input
-            mine = (job.get("payload") or {}).get("event_at") or ""
-            if mine > ((newer["payload"] or {}).get("event_at") or ""):
-                conn.execute("UPDATE jobs SET payload = %s WHERE id = %s",
-                             (Jsonb(job["payload"]), newer["id"]))  # fmt: skip
-            conn.execute(
-                "UPDATE jobs SET status = 'done', finished_at = now(), error = %s WHERE id = %s"
-                + HELD,
-                (f"superseded by job {newer['id']}: {error}"[:4000], job["id"], job.get("lease")),
-            )
-            return "superseded"
+    if retry and job.get("dedupe_key") and _supersede(conn, job, error):
+        return "superseded"
     if retry and job["attempts"] < MAX_ATTEMPTS:
-        conn.execute(
+        return _requeue(
+            conn, job, error,
             "UPDATE jobs SET status = 'queued', locked_by = NULL, locked_at = NULL, error = %s,"
             " run_after = now() + make_interval(secs => %s) WHERE id = %s" + HELD,
             (error[:4000], 30 * 2 ** job["attempts"], job["id"], job.get("lease")),
-        )
-        return "queued"
+        )  # fmt: skip
     conn.execute(
         "UPDATE jobs SET status = 'failed', finished_at = now(), error = %s WHERE id = %s" + HELD,
         (error[:4000], job["id"], job.get("lease")),
@@ -134,16 +121,53 @@ def fail(conn, job: dict, error: str, retry: bool = True) -> str:
 
 def defer(conn, job: dict, seconds: int, reason: str) -> bool:
     """Puts the job back to run later without using up one of its attempts (the job did
-    nothing wrong: GitHub asked us to wait)."""
-    return (
-        conn.execute(
-            "UPDATE jobs SET status = 'queued', locked_by = NULL, locked_at = NULL, error = %s,"
-            " attempts = GREATEST(attempts - 1, 0), run_after = now() + make_interval(secs => %s)"
-            " WHERE id = %s" + HELD,
-            (reason[:4000], seconds, job["id"], job.get("lease")),
-        ).rowcount
-        > 0
+    nothing wrong: GitHub asked us to wait). False when this claim no longer holds it."""
+    if not holds(conn, job):
+        return False
+    if job.get("dedupe_key") and _supersede(conn, job, reason):
+        return True
+    return _requeue(
+        conn, job, reason,
+        "UPDATE jobs SET status = 'queued', locked_by = NULL, locked_at = NULL, error = %s,"
+        " attempts = GREATEST(attempts - 1, 0), run_after = now() + make_interval(secs => %s)"
+        " WHERE id = %s" + HELD,
+        (reason[:4000], seconds, job["id"], job.get("lease")),
+    ) != "lost"  # fmt: skip
+
+
+def _supersede(conn, job: dict, error: str) -> bool:
+    """When the same work is queued again, that job will do it (with the newest input), so
+    this one ends as done instead of being retried."""
+    newer = conn.execute(
+        "SELECT id, payload FROM jobs WHERE dedupe_key = %s AND status = 'queued' AND id <> %s",
+        (job["dedupe_key"], job["id"]),
+    ).fetchone()
+    if not newer:
+        return False
+    mine = (job.get("payload") or {}).get("event_at") or ""
+    if mine > ((newer["payload"] or {}).get("event_at") or ""):
+        conn.execute("UPDATE jobs SET payload = %s WHERE id = %s",
+                     (Jsonb(job["payload"]), newer["id"]))  # fmt: skip
+    conn.execute(
+        "UPDATE jobs SET status = 'done', finished_at = now(), error = %s WHERE id = %s" + HELD,
+        (f"superseded by job {newer['id']}: {error}"[:4000], job["id"], job.get("lease")),
     )
+    return True
+
+
+def _requeue(conn, job: dict, error: str, sql: str, params: tuple) -> str:
+    """Runs `sql`, which puts the job back in the queue: "queued", or "lost" if the claim
+    ended meanwhile. Only one job per key may wait there, and a new one can arrive between
+    the check and this update (a push while the old scan was failing): then the new one
+    does the work and this one is "superseded"."""
+    try:
+        with conn.transaction():
+            done = conn.execute(sql, params).rowcount
+        return "queued" if done else "lost"
+    except UniqueViolation:
+        if not _supersede(conn, job, error):  # gone again already: let the caller see it
+            raise
+        return "superseded"
 
 
 def counts(conn) -> dict[str, int]:

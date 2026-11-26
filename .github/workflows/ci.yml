@@ -46,7 +46,7 @@ jobs:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
       - run: docker pull python:3.12-slim
-      - run: pytest tests/test_server.py tests/test_phase2.py -v
+      - run: pytest tests/test_server.py tests/test_server_load.py tests/test_phase2.py -v
       - run: docker build -t tokenwise-server .
       - run: docker run --rm tokenwise-server tokenwise server --help
 

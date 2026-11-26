@@ -167,6 +167,8 @@ Worker müşteri kodunu (projenin kontrol komutunu) çalıştıran tek parçadı
 - **Sıra dışı olaylar:** Push ve PR işleri olayın zamanını taşır. Kuyrukta bekleyen iş her zaman en yeni girdiyi tutar. Daha eski bir olay geç gelirse atlanır.
 - **Aynı anda çalışmama:** Aynı deponun taramaları, aynı PR'ın raporu ve aynı düzeltme hiçbir zaman eşzamanlı çalışmaz.
 - **Kalp atışı (heartbeat):** Çalışan iş her dakika "hâlâ çalışıyorum" kaydı bırakır. 10 dakika boyunca kayıt gelmezse worker'ın düştüğü varsayılır ve iş kuyruğa geri döner.
+- **Veritabanı bağlantısı koparsa:** Worker kapanmaz. Bağlantıyı yeniden kurmayı dener; her başarısız denemeden sonra biraz daha uzun bekler (en fazla bir dakika). Bağlantı koptuğunda üzerinde çalıştığı işi de 10 dakika beklemeden hemen kuyruğa geri koyar.
+- **Aynı anahtarla yeni iş gelirse:** Başarısız olan bir tarama kuyruğa geri konurken aynı depo için yeni bir push gelmiş olabilir. Bu durumda eski iş "yerini yenisine bıraktı" olarak kapanır, işi en yeni commit'le yeni iş yapar.
 - **Kira numarası (lease):** Bir işi her alışta yeni bir numara verilir. İş başka bir worker'a verildiyse eski worker bunu kalp atışından ya da dışarıya dokunan her adımdan (push, PR açma, yorum, kayıt) hemen önceki kontrolden anlar ve durur; sonucunu da yazamaz. Kontrol ile GitHub çağrısı arasındaki kısa aralık için o çağrılar zaten tekrar güvenlidir.
 - **Ortak istek sınırı:** Dakikalık istek sınırları PostgreSQL'de sayılır; birden fazla web süreci aynı sayacı paylaşır. Veritabanına ulaşılamazsa her süreç kendi belleğinde sayar.
 - **Güvenli yeniden deneme:** Yeniden denenen bir iş aynı PR yorumunu ve aynı taslak PR'ı bulup kullanır; ikinci bir kopya açmaz.
@@ -228,6 +230,7 @@ Worker müşteri kodunu (projenin kontrol komutunu) çalıştıran tek parçadı
 ## Ölçek
 
 - Worker sayısını artırmak için: `docker compose up -d --scale worker=3`. İşler `FOR UPDATE SKIP LOCKED` ile alındığı için aynı işi iki worker almaz.
-- Worker çökerse yarıda kalan iş 10 dakika sonra kuyruğa geri döner (bkz. Güvenilirlik).
+- Worker süreci çökerse yarıda kalan iş 10 dakika sonra kuyruğa geri döner. Yalnızca veritabanı bağlantısı koparsa iş hemen geri konur (bkz. Güvenilirlik).
+- Bu davranışlar gerçek PostgreSQL ile test edilir (`tests/test_server_load.py`): 8 worker ve 300 olay, 50 webhook'luk bir yığın, iş ortasında öldürülen bir worker süreci, kopan bağlantı ve kapalı veritabanı.
 - Başarısız iş artan aralıklarla 3 kez denenir. Aynı işin daha yeni hali kuyruktaysa eskisi tekrar denenmez.
 - Aynı dala art arda gelen push'lar tek tarama olur; aynı PR'a art arda gelen push'lar da tek rapor olur.
