@@ -194,6 +194,7 @@ class HealthStore:
             (scan_id, ts, scores["overall"], json.dumps(scores), len(open_rows), new, resolved),
         )
         self.db.commit()
+        assert scan_id is not None  # the INSERT above just made it
         return ScanResult(
             scan_id, scores, len(open_rows), new, resolved, reopened, file_count, seconds
         )

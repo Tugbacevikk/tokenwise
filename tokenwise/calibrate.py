@@ -9,6 +9,7 @@ Reads git only; no model is called and the working tree is never touched."""
 
 from __future__ import annotations
 
+import functools
 import json
 import subprocess
 import time
@@ -47,7 +48,8 @@ class Calibration:
     commits: int  # commits read from history
     window: int
     samples: list[Sample] = field(default_factory=list)
-    auc: dict[str, float] = field(default_factory=dict)  # per signal and "score"
+    # per signal and "score"; None = all commits of one kind, so no AUC
+    auc: dict[str, float | None] = field(default_factory=dict)
     suggested: dict[str, float] = field(default_factory=dict)  # empty = not enough data
     suggested_auc: float | None = None
     seconds: float = 0.0
@@ -103,6 +105,11 @@ class Blobs:
 class _Commit:
     commit: Commit
     stats: dict[str, tuple[int, int]]
+
+
+def _read_blob(blobs, tree: dict[str, str], path: str) -> str:
+    """A file's text at the commit being scored, from its blob id."""
+    return blobs.read(tree[path])
 
 
 def read_log(root: Path, limit: int) -> list[_Commit]:
@@ -227,13 +234,14 @@ def calibrate(
                 regression = bool(fix)
                 tree = tree_sources(settings, entry.commit.sha)
                 files = sorted(tree)
-                graph = build_graph(settings, files, read=lambda p, t=tree: blobs.read(t[p]))
+                read = functools.partial(_read_blob, blobs, tree)
+                graph = build_graph(settings, files, read=read)
                 change = ChangeInput(
                     stats=entry.stats,
                     sources=set(files),
                     graph=graph,
                     history=history,
-                    read=lambda p, t=tree: blobs.read(t[p]),
+                    read=read,
                     commits=[entry.commit],
                 )
                 report = score_change(change, entry.commit.sha[:12], WEIGHTS)

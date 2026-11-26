@@ -13,6 +13,7 @@ import re
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Any
 
 from . import syntax
 from .graph import Graph
@@ -118,12 +119,12 @@ def _function_name(lang: syntax.Lang, node) -> tuple[str, str, object] | None:
     return None
 
 
-def _units(path: str, source: str) -> list[tuple[Definition, object]]:
+def _units(path: str, source: str) -> list[tuple[Definition, Any]]:
     """Every named function, method and function-valued variable, with its syntax node."""
     lang, tree = syntax.language_for(path), syntax.parse(path, source)
     if lang is None or tree is None:
         return []
-    found: list[tuple[Definition, object]] = []
+    found: list[tuple[Definition, Any]] = []
 
     def visit(node, prefix: str, in_function: bool = False) -> None:
         for child in node.children:
@@ -173,6 +174,8 @@ def function_sizes(path: str, source: str) -> list[tuple[Definition, int]]:
     when the file is not one or its grammar is not installed."""
     lang = syntax.language_for(path)
     found = _units(path, source)
+    if lang is None or not found:
+        return []
     units = {(body.start_byte, body.end_byte) for _, body in found}
     units |= {(b.parent.start_byte, b.parent.end_byte) for _, b in found if b.parent is not None
               and b.parent.type == "variable_declarator"}  # fmt: skip

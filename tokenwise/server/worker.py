@@ -266,7 +266,7 @@ class Worker:
             keep.add(item["id"])
             repo_id = db.upsert_repo(self.conn, org["id"], item["id"], item["full_name"],
                                      item.get("default_branch") or "main")  # fmt: skip
-            scanned = db.repo(self.conn, repo_id)["last_scan_at"]
+            scanned = (db.repo(self.conn, repo_id) or {}).get("last_scan_at")
             if scanned is None:
                 queue.enqueue(self.conn, "scan", {"repository_id": repo_id,
                                                   "scan_type": "initial"},
@@ -461,7 +461,8 @@ def _require_unchanged(root: Path, changes: list[Change], why: str) -> None:
 def _fix_pr_body(fix: dict) -> str:
     summary = fix["summary"] or {}
     check = summary.get("check") or {}
-    state = {True: "geçti", False: "geçmedi"}.get(check.get("passed"), "çalıştırılmadı")
+    passed = check.get("passed")
+    state = "çalıştırılmadı" if passed is None else ("geçti" if passed else "geçmedi")
     lines = summary.get("lines") or {}
     origin = (f"; #{fix['pr_number']} için risk raporundaki bir öneriden geldi"
               if fix.get("pr_number") else "")  # fmt: skip

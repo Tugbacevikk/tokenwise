@@ -41,10 +41,12 @@ PRICES: dict[str, Price] = {
 
 def price_for(model: str, overrides: dict | None = None) -> Price | None:
     if overrides and model in overrides:
-        values = [float(v) for v in overrides[model]]
-        if len(values) > 4:  # optional: long_threshold, long_multiplier
-            values[4] = int(values[4])
-        return Price(*values)
+        v = [float(x) for x in overrides[model]]
+        return Price(
+            v[0], v[1], v[2], v[3],
+            long_threshold=int(v[4]) if len(v) > 4 else 0,  # optional: long_threshold,
+            long_multiplier=v[5] if len(v) > 5 else 1.0,  # long_multiplier
+        )  # fmt: skip
     return PRICES.get(model)
 
 

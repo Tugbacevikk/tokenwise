@@ -54,5 +54,5 @@ def turkish_error(text: str | None) -> str | None:
         found = pattern.match(text)
         if found:
             groups = [g or "" for g in found.groups()]
-            return wording(*groups) if callable(wording) else wording
+            return str(wording(*groups)) if callable(wording) else str(wording)
     return text

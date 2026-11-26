@@ -364,7 +364,10 @@ Modellerin yazdığı klasik *unified diff*'te satır numaraları sık sık kaya
 
 ```
 tokenwise/
-├── cli.py        # komutlar: init, map, ask, apply, undo, report, benchmark, cache
+├── cli.py        # komutlar: init, map, ask, apply, undo, report, cache (ve ortak yardımcılar)
+├── cli_bench.py  # komut: benchmark
+├── cli_health.py # komutlar: doctor, scan, findings, fix, risk, calibrate
+├── cli_server.py # komutlar: serve, server (web, worker, migrate, doctor, selftest)
 ├── config.py     # ayarlar: varsayılanlar → tokenwise.toml → ortam değişkenleri
 ├── repo_map.py   # proje haritası (Python: ast, JS/TS: düzenli ifadeler)
 ├── selector.py   # ucuz modelle dosya seçimi

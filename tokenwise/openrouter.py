@@ -67,7 +67,7 @@ def load_prices(client, cache: Path | None) -> dict[str, list[float]]:
         return {}
     if prices and cache is None:
         _memory["prices"] = (time.time(), prices)
-    elif prices:
+    elif prices and cache is not None:
         cache.parent.mkdir(parents=True, exist_ok=True)
         cache.write_text(json.dumps(prices), "utf-8")
     return prices

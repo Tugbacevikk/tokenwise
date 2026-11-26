@@ -119,6 +119,8 @@ def _post(client, url: str, body: dict, model: str, server: str):
 class OpenAICompatibleLLM:
     """Talks to any server with the OpenAI chat API: LM Studio, vLLM, OpenAI itself."""
 
+    priced = False  # OpenRouter: live prices were loaded (see openrouter_backend)
+
     def __init__(self, base_url: str, api_key: str | None = None, timeout: float = 600,
                  headers: dict | None = None, transport=None) -> None:  # fmt: skip
         import httpx

@@ -27,9 +27,9 @@ def check_database(server: ServerConfig) -> Check:
 
     try:
         with db.connect(server.database_url) as conn:
-            version = conn.execute("SHOW server_version").fetchone()["server_version"]
+            version = str(db.value(conn, "SHOW server_version"))
             db.migrate(conn)
-            jobs = conn.execute("SELECT COUNT(*) AS n FROM jobs").fetchone()["n"]
+            jobs = db.value(conn, "SELECT COUNT(*) FROM jobs")
     except Exception as exc:  # noqa: BLE001 - any failure is the answer
         return Check("PostgreSQL", False, f"bağlanılamadı: {exc}. DATABASE_URL'i kontrol edin.")
     major = int(version.split(".")[0]) if version.split(".")[0].isdigit() else 0

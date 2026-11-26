@@ -170,7 +170,7 @@ _LANG_PATTERNS = {
 
 
 def _outline_with(patterns: list, source: str) -> list[str]:
-    found = {}
+    found: dict[int, str] = {}
     for pattern, template in patterns:
         for match in pattern.finditer(source):
             groups = [" ".join((g or "").split()) for g in match.groups()]
