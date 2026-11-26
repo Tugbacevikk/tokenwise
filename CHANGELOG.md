@@ -3,7 +3,7 @@
 Version numbers follow `major.minor.patch`: a bug fix bumps patch, a new feature bumps minor,
 a change that breaks existing use bumps major.
 
-## 1.0.0 — unreleased
+## 1.0.0 — 2026-11-26
 
 First release.
 
